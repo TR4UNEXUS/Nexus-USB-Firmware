@@ -1,0 +1,36 @@
+/*
+ * Copyright (c) Atmosphère-NX
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+#include <vapours.hpp>
+
+namespace ams::util {
+    
+    constexpr size_t DecompressZstdWithBicWorkBufferSizeDefault = 0x176E8;
+
+    /* Compression utilities. */
+    int CompressLZ4(void *dst, size_t dst_size, const void *src, size_t src_size);
+    size_t CompressZstd(void *dst, size_t dst_size, const void *src, size_t src_size);
+    size_t CompressZstdWithBic(void *dst, size_t dst_size, const void *src, size_t src_size);
+
+    /* Decompression utilities. */
+    int DecompressLZ4(void *dst, size_t dst_size, const void *src, size_t src_size);
+    int DecompressLZ4Frame(size_t* out_size, void *dst, size_t dst_size, const void *src, size_t src_size, void *src_work, size_t src_work_size, void *dst_work, size_t dst_work_size);
+    size_t DecompressZstd(void *dst, size_t dst_size, const void *src, size_t src_size);
+    size_t DecompressZstdWithBic(void *dst, size_t dst_size, const void *src, size_t src_size);
+    bool DecompressZstdWithBic(void* workspace, size_t workspace_size, void *dst, size_t dst_size, size_t expected_dec_size, const void *src, size_t src_size);
+
+}
