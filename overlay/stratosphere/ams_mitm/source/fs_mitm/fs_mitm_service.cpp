@@ -812,7 +812,7 @@ namespace ams::mitm::fs {
         if (R_SUCCEEDED(stock_result)) {
             const sf::cmif::DomainObjectId object_id{serviceGetObjectId(std::addressof(stock_storage.s))};
             std::shared_ptr<ams::fs::IStorage> storage = std::make_shared<fs::RemoteStorage>(stock_storage);
-            /* Preserve fresh CNX's SD LayeredFS support in the unified native-
+            /* Preserve fresh Nexus's SD LayeredFS support in the unified native-
              * first/USB-fallback handler, without opening the native object twice. */
             if (m_client_info.override_status.IsProgramSpecific() && mitm::fs::HasSdRomfsContent(program_id)) {
                 storage = GetLayeredRomfsStorage(program_id, std::move(storage), true, nullptr);

@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 tests = Path(__file__).resolve().parent
-tree = tests.parent / "Atmosphere"
+tree = tests.parents[1]
 lib = tree / "libraries/libstratosphere/source/fssystem"
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)

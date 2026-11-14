@@ -1,4 +1,4 @@
-/* Nexus CNX S2: isolated read-only USB diagnostic. GPL-2.0-or-later. */
+/* Nexus S2: isolated read-only USB diagnostic. GPL-2.0-or-later. */
 #include <stratosphere.hpp>
 #include <stratosphere/usb/usb_device_map.hpp>
 #include <stratosphere/usb/usb_compatibility.hpp>
@@ -74,7 +74,7 @@ namespace {
             // Status mutex is short-lived; released before any SD operation.
             const auto s=Status();
             const int n=util::SNPrintf(g_status_log,sizeof(g_status_log),
-                "Nexus CNX S2 / read-only transport / no content routing\n"
+                "Nexus S2 / read-only transport / no content routing\n"
                 "state=%u result=%08X io=%08X generation=%llu\n"
                 "blocks=%llu block_size=%u filesystem=%u lun=%u\n"
                 "probe_stage=%u probe_result=%08X interfaces=%u\n"

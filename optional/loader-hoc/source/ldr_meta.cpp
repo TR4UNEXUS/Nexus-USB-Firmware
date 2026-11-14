@@ -285,7 +285,7 @@ namespace ams::ldr {
                 }
 
 
-                /* CNX compatibility: only the hbl override gets forced debug
+                /* Nexus compatibility: only the hbl override gets forced debug
                  * capabilities. Ordinary titles retain consolidation rules. */
                 FixDebugCapabilityForHbl(static_cast<util::BitPack32 *>(meta->acid_kac), meta->acid->kac_size / sizeof(util::BitPack32));
                 FixDebugCapabilityForHbl(static_cast<util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32));

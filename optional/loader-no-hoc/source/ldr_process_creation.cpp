@@ -737,7 +737,7 @@ namespace ams::ldr {
                 /* Apply embedded patches. */
                 ApplyEmbeddedPatchesToModule(nso_header->module_id, map_address, nso_size);
 
-                /* C9: CNX qlaunch theme compatibility on 23.0.0/23.0.1, without replacing the
+                /* C9: Nexus qlaunch theme compatibility on 23.0.0/23.0.1, without replacing the
                  * USB/native-error patch policy or patching other programs. */
                 if (program_id == ncm::SystemAppletId::Qlaunch && is_main_nso
                         && nso_header->text_dst_offset <= map_size

@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 tests = Path(__file__).resolve().parent
-src = tests.parent / "Atmosphere"
+src = tests.parents[1]
 lib = src / "libraries/libstratosphere/source/fssystem"
 module = src / "stratosphere/ams_mitm/source/usb_mitm/usbmitm_module.cpp"
 driver = lib / "fssystem_nca_file_system_driver.cpp"

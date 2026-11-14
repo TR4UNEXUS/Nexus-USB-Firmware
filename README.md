@@ -4,6 +4,8 @@ The USB integration source used by Nexus Atmosphere: USB storage, filesystem rou
 
 This repository is for working on USB support without navigating the entire firmware tree. It includes the U2 SD registration fix, explicit USB installation commands, the write-performance work, the paged database and the SL7 sleep/wake recovery changes.
 
+The current source matches **Nexus Atmosphere 1.12.2 N1**, with basic support for **Switch system version 23.5.0**. The USB-only Loader is the default; the matching HOC 2.6.0 Loader is included as an optional build. See [the changelog](CHANGELOG.md).
+
 ## How it fits together
 
 USB support is integrated into several Atmosphere modules. This is an overlay on a pinned [Nexus Atmosphere](https://github.com/TR4UNEXUS/Nexus-Atmosphere) revision, not an independently installable KIP. `base.json` records that revision. The preparation tool checks it out and applies the included source before you build.
@@ -15,9 +17,10 @@ USB support is integrated into several Atmosphere modules. This is an overlay on
 | `overlay/libraries/libstratosphere/source/ncm` | Content metadata, registration and database changes |
 | `overlay/stratosphere/loader` | Game-loading integration |
 | `overlay/tests/nexus-integration` | Host regression tests |
-| `optional` | Alternative HOC-free and separated HOC Loader source |
+| `optional/loader-hoc-2.6.0` | Current HOC 2.6.0 Loader with Nexus USB support |
+| `optional/loader-no-hoc`, `optional/loader-hoc` | Historical HS2 Loader alternatives |
 
-The library namespace is included in full so its headers and implementation stay together. The base repository supplies the rest of Atmosphere and the optional HOC helper/controls.
+The library namespace is included in full so its headers and implementation stay together. The base repository supplies the rest of Atmosphere, including the 23.5.0 version support, Nexus splash resources and build scripts. Preparation applies both `overlay` and `optional` so changes to either are included in the build tree.
 
 ## Build and contribute
 

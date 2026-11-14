@@ -1,4 +1,4 @@
-/* Nexus CNX S2. GPL-2.0-or-later. */
+/* Nexus S2. GPL-2.0-or-later. */
 #pragma once
 #include <stratosphere.hpp>
 #include "../amsmitm_module.hpp"
