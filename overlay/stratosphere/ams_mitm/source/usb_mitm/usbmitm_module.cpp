@@ -97,7 +97,7 @@ namespace ams::mitm::usb_storage {
         constexpr const char *UltrahandNotificationDirectory = "/config/ultrahand/notifications";
         /* R83 also accepts NS patch status from a late generic Loader request
          * when the failing title aborts before its mapped resolver executes. */
-    constexpr const char *BuildId = "NEXUS-CNX-S3-E1-U2-sd-register";
+    constexpr const char *BuildId = "NEXUS-1.12.2-N1-sd-register";
         int FormatUsbMetadataOptimizationStatus(char *out, size_t capacity) {
             return util::SNPrintf(out, capacity,
                 "io_metadata_cache=SD9\nio_metadata_cache_slots=64\n"

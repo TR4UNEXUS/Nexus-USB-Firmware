@@ -26,15 +26,16 @@ actual = subprocess.check_output(['git', '-C', str(destination), 'rev-parse', 'H
 if actual != commit:
     raise SystemExit('The checked-out base does not match base.json')
 count = 0
-for path in sorted((root / 'overlay').rglob('*')):
-    if path.is_symlink():
-        raise SystemExit(f'Unexpected symlink in overlay: {path}')
-    if path.is_file():
-        relative = path.relative_to(root / 'overlay')
-        target = destination / relative
-        if not target.resolve().is_relative_to(destination):
-            raise SystemExit(f'Overlay path escapes destination: {relative}')
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
-        count += 1
-print(f'Prepared {destination} at {commit} with {count} overlay files.')
+for source, prefix in ((root / 'overlay', Path()), (root / 'optional', Path('optional'))):
+    for path in sorted(source.rglob('*')):
+        if path.is_symlink():
+            raise SystemExit(f'Unexpected symlink in source: {path}')
+        if path.is_file():
+            relative = prefix / path.relative_to(source)
+            target = destination / relative
+            if not target.resolve().is_relative_to(destination):
+                raise SystemExit(f'Source path escapes destination: {relative}')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            count += 1
+print(f'Prepared {destination} at {commit} with {count} USB integration files.')

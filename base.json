@@ -1,5 +1,7 @@
 {
   "repository": "https://github.com/TR4UNEXUS/Nexus-Atmosphere.git",
-  "commit": "561a8bce595cfec6588a4eb8b2bca3f3cf6d8bbd",
-  "firmware": "NEXUS-CNX-S3-E1-U2-sd-register"
+  "commit": "c246c2ee3866c4897cb5741f1cbf5026a1000582",
+  "firmware": "Nexus Atmosphere 1.12.2 N1",
+  "atmosphere_version": "1.12.2",
+  "supported_hos_version": "23.5.0"
 }

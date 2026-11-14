@@ -135,7 +135,7 @@ public:
         if(cache && (cache->magic!=NEXUS_USB_WRITE_CACHE_MAGIC || cache->version!=NEXUS_USB_WRITE_CACHE_VERSION ||
            cache->size!=sizeof(*cache) || cache->capacity!=NEXUS_USB_WRITE_CACHE_CAPACITY || cache->cached_sectors>cache->capacity))return 0;
         const auto &l=p.loader;
-        Text("{\"schema\":1,\"application\":\"Nexus Atmosphere\",\"version\":\"SD14\",\"kind\":\"startup_timings\",\"result\":0,\"automatic\":true,\"firmware_build_id\":\"NEXUS-CNX-S3-E1-SD14-completion-probe\",\"query_started_ns\":");Number(p.sampled_ns);
+        Text("{\"schema\":1,\"application\":\"Nexus Atmosphere\",\"version\":\"SD14\",\"kind\":\"startup_timings\",\"result\":0,\"automatic\":true,\"firmware_build_id\":\"NEXUS-S3-E1-SD14-completion-probe\",\"query_started_ns\":");Number(p.sampled_ns);
         if(cache) {
             Text(",\"write_cache\":{\"version\":1,\"scope\":\"boot_cumulative_at_autosave\",");
             Field("sampled_ns",cache->sampled_ns);Byte(',');Field("media_generation",cache->media_generation);Byte(',');

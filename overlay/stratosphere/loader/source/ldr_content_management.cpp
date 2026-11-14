@@ -42,6 +42,18 @@ namespace ams::ldr {
                     || storage_id == ncm::StorageId::Host);
         }
 
+        bool TryGetUsbContentServiceHandle(os::NativeHandle *out) {
+            AMS_ASSERT(out != nullptr);
+
+            const auto service_name = sm::ServiceName::Encode(usb::content::ServiceName);
+            bool has_service = false;
+            if (R_FAILED(sm::HasService(std::addressof(has_service), service_name)) || !has_service) {
+                return false;
+            }
+
+            return R_SUCCEEDED(sm::GetServiceHandle(out, service_name));
+        }
+
         Result RememberUsbExternalCodeVerification(ncm::ProgramId program_id, const fs::CodeVerificationData &verification) {
             std::scoped_lock lk(g_usb_external_code_verification_mutex);
             g_usb_external_code_verification.Remove(program_id);
@@ -73,14 +85,73 @@ namespace ams::ldr {
         }
 
         void RecordUsbLoaderProbe(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess(), ncm::StorageId metadata_storage = ncm::StorageId::None) {
-            /* S3: diagnostics must not add synchronous service dependencies to
-             * Loader. Keep functional USB requests and USB-side logging only. */
-            AMS_UNUSED(stage, loc, result, metadata_storage);
+            os::NativeHandle service_handle;
+            if (!TryGetUsbContentServiceHandle(std::addressof(service_handle))) {
+                return;
+            }
+
+            Service usb_service{};
+            serviceCreate(std::addressof(usb_service), service_handle);
+            ON_SCOPE_EXIT { serviceClose(std::addressof(usb_service)); };
+
+            const usb::content::LoaderProbeInfo info{
+                .program_id      = loc.program_id.value,
+                .stage           = static_cast<u32>(stage),
+                .result          = result.GetValue(),
+                .location_storage = loc.storage_id,
+                .metadata_storage = static_cast<u8>(metadata_storage),
+                .reserved        = {},
+            };
+            const Result record_result = serviceDispatchIn(std::addressof(usb_service), usb::content::CommandId_RecordLoaderProbe, info);
+            AMS_UNUSED(record_result);
         }
 
         void RecordUsbLoaderTrace(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess(), ncm::StorageId metadata_storage = ncm::StorageId::None, ncm::StorageId content_storage = ncm::StorageId::None, const ncm::ContentId *content_id = nullptr, const char *path = nullptr) {
-            /* No IPC or SD I/O on the diagnostic path, including stock apps. */
-            AMS_UNUSED(stage, loc, result, metadata_storage, content_storage, content_id, path);
+            os::NativeHandle service_handle;
+            if (!TryGetUsbContentServiceHandle(std::addressof(service_handle))) {
+                return;
+            }
+
+            Service usb_service{};
+            serviceCreate(std::addressof(usb_service), service_handle);
+            ON_SCOPE_EXIT { serviceClose(std::addressof(usb_service)); };
+
+            usb::content::LoaderTraceInfo info{};
+            info.program_id = loc.program_id.value;
+            info.stage = static_cast<u32>(stage);
+            info.result = result.GetValue();
+            info.location_storage = loc.storage_id;
+            info.metadata_storage = static_cast<u8>(metadata_storage);
+            info.content_storage = static_cast<u8>(content_storage);
+            if (content_id != nullptr) {
+                std::memcpy(info.content_id, content_id->uuid.data, sizeof(info.content_id));
+            }
+            if (path != nullptr) {
+                const size_t path_length = std::strlen(path);
+                const size_t copied_length = std::min(path_length, sizeof(info.path) - 1);
+                std::memcpy(info.path, path, copied_length);
+                info.path[copied_length] = '\x00';
+                if (copied_length < path_length) {
+                    info.flags |= usb::content::LoaderTraceFlag_PathTruncated;
+                }
+            }
+
+            const Result record_result = serviceDispatchIn(std::addressof(usb_service), usb::content::CommandId_RecordLoaderTrace, info);
+            AMS_UNUSED(record_result);
+        }
+
+        void RecordNsPrePglPatchDiagnostic(const ncm::ProgramLocation &loc) {
+            const auto diagnostic = GetNsPrePglPatchDiagnostic();
+            char text[sizeof(usb::content::LoaderTraceInfo::path)]{};
+            util::SNPrintf(text, sizeof(text),
+                "ns-patch a=%u f=%u pre=%08X/%08X post=%08X/%08X mid=%08X%08X sz=%llX ldr=MP1",
+                static_cast<u32>(diagnostic.apply_status),
+                static_cast<u32>(diagnostic.final_status),
+                diagnostic.pre_patch_words[0], diagnostic.pre_patch_words[1],
+                diagnostic.final_words[0], diagnostic.final_words[1],
+                diagnostic.module_id_words[1], diagnostic.module_id_words[0],
+                static_cast<unsigned long long>(diagnostic.mapped_size));
+            RecordUsbLoaderTrace(usb::content::LoaderProbeStage::NsPrePglPatchDiagnostic, loc, ResultSuccess(), ncm::StorageId::None, ncm::StorageId::None, nullptr, text);
         }
 
         Result BindUsbExternalCode(const char *path, const ncm::ProgramLocation &loc) {
@@ -201,6 +272,7 @@ namespace ams::ldr {
                 return false;
             }
 
+            RecordNsPrePglPatchDiagnostic(loc);
             RecordUsbLoaderProbe(usb::content::LoaderProbeStage::Entered, loc);
             RecordUsbLoaderTrace(usb::content::LoaderProbeStage::Entered, loc);
             RecordUsbLoaderProbe(usb::content::LoaderProbeStage::UsbTitleMapHit, loc);
@@ -360,7 +432,11 @@ namespace ams::ldr {
         if (!IsUsbUserProgramLocation(loc)) {
             return;
         }
-        /* Retained API, with no synchronous diagnostic IPC in the clean build. */
+        /* NS can reject a mapped title before it ever reaches Loader's USB
+         * path resolver. Publish the boot-captured NS patch status from every
+         * later user-program Loader request as well. This service-backed path
+         * is unavailable during early boot by design and performs no SD I/O. */
+        RecordNsPrePglPatchDiagnostic(loc);
         RecordUsbLoaderTrace(stage, loc, result);
     }
 

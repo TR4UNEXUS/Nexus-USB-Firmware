@@ -1,4 +1,4 @@
-/* Nexus CNX S2 read-only test protocol. GPL-2.0-or-later. */
+/* Nexus S2 read-only test protocol. GPL-2.0-or-later. */
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
