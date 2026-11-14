@@ -2,10 +2,10 @@
 #pragma once
 
 namespace ams::mitm::usb_storage::impl {
-    // SC1: the existing USB-application header policy is part of this build.
-    // Index loss must not change it. The NcaReader still restricts the exception
-    // to application IDs; section hashes, keys and data verification are intact.
+    // Unsigned NCA headers are never accepted from USB. Content on the drive
+    // must pass the same signature checks as SD and NAND content.
     constexpr bool UseEmbeddedUsbHeaderCompatibility(bool content_enabled) {
-        return content_enabled;
+        static_cast<void>(content_enabled);
+        return false;
     }
 }
