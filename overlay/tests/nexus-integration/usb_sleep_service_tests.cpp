@@ -186,6 +186,9 @@ struct Status{State state=State::Ready;u64 partition_first_lba=64,media_generati
     u32 block_size=512;u8 lun{},partition_index{},partition_count=1;s32 interface_id=10;
     u32 last_result{},last_io_result{};bool writable=true;};
 struct Service{
+    struct CacheProbe{unsigned clears{};void Clear(){++clears;}} cache_probe;
+    CacheProbe* m_game_read_cache=&cache_probe;
+    std::atomic<u32> m_waiting_game_reads{};
     bool m_checkpoint_pending{},m_checkpoint_valid{},m_read_only{},m_skip_checkpoint_on_next_mount{};
     struct {void NewGeneration(u64){}}m_eject;
     mutable std::mutex m_power_mutex,m_volume_mutex,m_mutex;NativeCondition m_power_cv;sleep::Gate m_power_gate;
@@ -421,6 +424,7 @@ static void UnusableCheckpoints() {
         s.m_writable_volume.during_mutation = [&]{
             ++calls;
             CHECK(!s.m_checkpoint_valid && !s.m_checkpoint_pending);
+            CHECK(s.cache_probe.clears>0);
         };
         u8 byte{};
         size_t written{};

@@ -3,6 +3,7 @@
  * This program is free software under version 2 of the GNU General Public License.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/ncm/ncm_usb_map_backup.hpp>
 #include <stratosphere/usb/usb_content_proxy.hpp>
 #include <stratosphere/ncm/ncm_usb_title_map.hpp>
 #include "ncm_paged_content_meta_database_impl.hpp"
@@ -383,10 +384,14 @@ namespace ams::ncm {
             R_TRY(RegisterUsbTitleContent(ProgramId{key.id}, meta, control, program));
             R_TRY(RegisterUsbTitle(ProgramId{key.id}));
         }
+        const bool routing_changed=m_pending_usb_title_id_count || m_pending_stock_title_id_count;
         m_pending_usb_title_id_count = 0;
         for (s32 i = 0; i < m_pending_stock_title_id_count; ++i)
             R_TRY(UnregisterUsbTitle(ProgramId{m_pending_stock_title_ids[i].id}));
         m_pending_stock_title_id_count = 0;
+        // Registration is already durable. Backup failure is diagnostic and
+        // must not report a successful install as failed or delete its files.
+        if (routing_changed) RequestUsbRoutingBackup();
         R_SUCCEED();
     }
 

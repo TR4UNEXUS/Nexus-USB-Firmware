@@ -1,0 +1,83 @@
+
+#include <algorithm>
+#include <vector>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <cassert>
+#include <cstdio>
+#include <lz4.h>
+using Result=int;using s32=int;using s64=std::int64_t;using u32=unsigned;
+#define R_SUCCEED_IF(x) if(x)return 0
+#define R_SUCCEED() return 0
+#define R_RETURN(x) return (x)
+#define R_TRY(x) do{auto r=(x);if(r)return r;}while(0)
+#define R_UNLESS(x,r) do{if(!(x))return (r);}while(0)
+#define AMS_ASSERT(x) do{if(!(x))return 9000;}while(0)
+#define AMS_UNUSED(x) (void)(x)
+#define ALWAYS_INLINE_LAMBDA
+namespace fs {int ResultUnexpectedInCompressedStorageB(){return 5325;}}
+namespace util {template<class F>F MakeIFunction(F f){return f;}}
+struct ScopedThreadPriorityChanger{enum class Mode{Relative};ScopedThreadPriorityChanger(int,Mode){}};
+std::size_t capacity=65536;
+namespace fssystem {struct PooledBuffer{
+    std::vector<char> b;
+    size_t GetAllocatableSizeMax(){return capacity;}
+    static size_t GetAllocatableParticularlyLargeSizeMax(){return capacity;}
+    void Allocate(size_t size,size_t){b.resize(std::min(size,capacity));}
+    void AllocateParticularlyLarge(size_t size,size_t min){Allocate(size,min);}
+    size_t GetSize(){return b.size();}char* GetBuffer(){return b.data();}
+};}
+using fssystem::PooledBuffer;
+enum CompressionType{CompressionType_None,CompressionType_Zeros,CompressionType_Lz4};
+struct Entry{CompressionType compression_type;u32 gap_from_prev,physical_size,virtual_size;};
+struct Data {std::vector<char> data;unsigned reads{};bool fail{};Result Read(s64 offset,void* out,size_t n){++reads;if(fail)return 7001;if(offset<0||size_t(offset)+n>data.size())return 7000;if(n)memcpy(out,data.data()+offset,n);return 0;}};
+struct Harness {
+    std::vector<Entry> entries;Data m_data_storage;std::vector<char> expected,output;
+    s32 entry_count{};bool will_allocate_pooled_buffer=true;
+    s64 required_access_physical_offset{},required_access_physical_size{};
+    size_t m_block_size_max=65536;
+    static Result Decompress(void* dst,size_t dn,const void* src,size_t sn){return LZ4_decompress_safe((const char*)src,(char*)dst,sn,dn)==int(dn)?0:5326;}
+    auto GetDecompressor(CompressionType){return Decompress;}
+    template<class F> Result read_func(size_t n,F f){auto start=output.size();output.resize(start+n);return f(output.data()+start,n);}
+    void Add(CompressionType kind,size_t size,unsigned seed,unsigned gap){
+        std::vector<char> raw(size);for(auto& c:raw){seed=seed*1664525+1013904223;c=seed>>24;}
+        if(kind==CompressionType_Zeros)std::fill(raw.begin(),raw.end(),0);
+        expected.insert(expected.end(),raw.begin(),raw.end());std::vector<char> stored;
+        if(kind==CompressionType_Lz4){stored.resize(LZ4_compressBound(size));const auto n=LZ4_compress_default(raw.data(),stored.data(),size,stored.size());assert(n>0);stored.resize(n);}
+        else if(kind==CompressionType_None)stored=raw;
+        if(kind==CompressionType_Zeros)gap=0;
+        m_data_storage.data.insert(m_data_storage.data.end(),gap,0);
+        m_data_storage.data.insert(m_data_storage.data.end(),stored.begin(),stored.end());
+        entries.push_back({kind,gap,u32(stored.size()),u32(size)});entry_count=entries.size();required_access_physical_size=m_data_storage.data.size();
+    }
+    Result Run(){
+@PRODUCTION_READ_LAMBDA@
+        return PerformRequiredRead();
+    }
+};
+int main(){unsigned cases=0,failed=0;
+    for(auto pool:{65536U,131072U,655360U})for(unsigned variant=0;variant<8;++variant){
+        capacity=pool;Harness h;
+        h.Add(CompressionType_Lz4,50000,1,0);
+        h.Add(variant&1?CompressionType_None:CompressionType_Lz4,30000,2,3);
+        if(variant&2)h.Add(CompressionType_Zeros,4096,0,0);
+        h.Add(CompressionType_Lz4,45000,3,7);
+        if(variant&4)h.Add(CompressionType_None,180000,4,0);
+        h.Add(CompressionType_Lz4,55000,5,5);
+        const auto result=h.Run();const bool okay=!result&&h.output==h.expected;
+        if(!okay){++failed;printf("pool=%u variant=%u result=%d bytes=%zu expected=%zu\n",pool,variant,result,h.output.size(),h.expected.size());}
+        ++cases;
+    }
+    // Direct reads, zero-only ranges, empty spans and storage failures.
+    for(bool buffered:{false,true})for(auto type:{CompressionType_None,CompressionType_Zeros}){
+        if(type==CompressionType_Zeros&&!buffered)continue; // caller always buffers non-None entries
+        Harness h;h.will_allocate_pooled_buffer=buffered;h.Add(type,4096,1,0);h.Add(type,4096,2,0);
+        ++cases;if(h.Run()||h.output!=h.expected)++failed;
+    }
+    {Harness h;++cases;if(h.Run()||!h.output.empty())++failed;}
+    {Harness h;h.Add(CompressionType_Lz4,50000,1,0);h.m_data_storage.fail=true;++cases;if(h.Run()!=7001)++failed;}
+    {Harness h;h.Add(CompressionType_Lz4,50000,1,0);h.m_data_storage.data.resize(100);++cases;if(!h.Run())++failed;}
+    {Harness h;h.Add(CompressionType_Lz4,50000,1,0);std::fill(h.m_data_storage.data.begin(),h.m_data_storage.data.end(),0);++cases;if(h.Run()!=5326)++failed;}
+    printf("cases=%u failed=%u\n",cases,failed);return failed?1:0;
+}

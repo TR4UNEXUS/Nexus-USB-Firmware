@@ -1,6 +1,7 @@
+#include <stratosphere/ncm/ncm_usb_map_write_lease.hpp>
 #include "sd_io_hooks.hpp"
 /*
- * Copyright (c) Atmosphère-NX
+ * Copyright (c) AtmosphÃ¨re-NX
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -97,7 +98,7 @@ namespace ams::mitm::usb_storage {
         constexpr const char *UltrahandNotificationDirectory = "/config/ultrahand/notifications";
         /* R83 also accepts NS patch status from a late generic Loader request
          * when the failing title aborts before its mapped resolver executes. */
-    constexpr const char *BuildId = "NEXUS-1.12.2-N1-sd-register";
+    constexpr const char *BuildId = "NEXUS-1.12.2-HS3R1-independent-loader";
         int FormatUsbMetadataOptimizationStatus(char *out, size_t capacity) {
             return util::SNPrintf(out, capacity,
                 "io_metadata_cache=SD9\nio_metadata_cache_slots=64\n"
@@ -1216,9 +1217,12 @@ namespace ams::mitm::usb_storage {
             *out_count = 0;
 
             FsFile file{};
-            if (R_FAILED(mitm::fs::OpenAtmosphereSdFile(std::addressof(file), TitleMapPath, ams::fs::OpenMode_Read))) {
+            auto open = mitm::fs::OpenAtmosphereSdFile(std::addressof(file), TitleMapPath, ams::fs::OpenMode_Read);
+            if (ams::fs::ResultPathNotFound::Includes(open))
+                open = mitm::fs::OpenAtmosphereSdFile(std::addressof(file), "/usb_content/title_map.bin.bak",
+                                                      ams::fs::OpenMode_Read);
+            if (R_FAILED(open))
                 return false;
-            }
             ON_SCOPE_EXIT { static_cast<void>(fsFileClose(std::addressof(file))); };
 
             s64 file_size = 0;
@@ -1228,12 +1232,11 @@ namespace ams::mitm::usb_storage {
 
             TitleMapHeader header{};
             size_t read_size = 0;
-            if (file_size < static_cast<s64>(sizeof(header))
-                || R_FAILED(fsFileRead(std::addressof(file), 0, std::addressof(header), sizeof(header), FsReadOption_None, std::addressof(read_size)))
-                || read_size != sizeof(header)
-                || header.magic != TitleMapMagic
-                || header.version != TitleMapVersion
-                || header.count > TitleMapMaxEntries) {
+            if (file_size < static_cast<s64>(sizeof(header)) ||
+                R_FAILED(fsFileRead(std::addressof(file), 0, std::addressof(header), sizeof(header), FsReadOption_None,
+                                    std::addressof(read_size))) ||
+                read_size != sizeof(header) || header.magic != TitleMapMagic || header.version != TitleMapVersion ||
+                header.count > TitleMapMaxEntries || header.reserved != 0) {
                 return false;
             }
 
@@ -1245,12 +1248,18 @@ namespace ams::mitm::usb_storage {
             if (header.count > 0) {
                 read_size = 0;
                 const size_t entries_size = static_cast<size_t>(header.count) * sizeof(TitleMapEntry);
-                if (R_FAILED(fsFileRead(std::addressof(file), sizeof(header), out_entries, entries_size, FsReadOption_None, std::addressof(read_size)))
-                    || read_size != entries_size) {
+                if (R_FAILED(fsFileRead(std::addressof(file), sizeof(header), out_entries, entries_size, FsReadOption_None,
+                                        std::addressof(read_size))) ||
+                    read_size != entries_size) {
                     return false;
                 }
             }
 
+            for (u32 i = 0; i < header.count; ++i) {
+                if (!out_entries[i].program_id) return false;
+                for (u32 j = 0; j < i; ++j)
+                    if (out_entries[i].program_id == out_entries[j].program_id) return false;
+            }
             *out_count = header.count;
             return true;
         }
@@ -1279,7 +1288,8 @@ namespace ams::mitm::usb_storage {
                 };
                 R_TRY(fsFileWrite(std::addressof(file), 0, std::addressof(header), sizeof(header), FsWriteOption_None));
                 if (count > 0) {
-                    R_TRY(fsFileWrite(std::addressof(file), sizeof(header), entries, static_cast<size_t>(count) * sizeof(TitleMapEntry), FsWriteOption_Flush));
+                    R_TRY(fsFileWrite(std::addressof(file), sizeof(header), entries,
+                                      static_cast<size_t>(count) * sizeof(TitleMapEntry), FsWriteOption_Flush));
                 } else {
                     R_TRY(fsFileFlush(std::addressof(file)));
                 }
@@ -1287,10 +1297,63 @@ namespace ams::mitm::usb_storage {
 
             char old_path[ams::fs::EntryNameLengthMax + 1]{};
             char new_path[ams::fs::EntryNameLengthMax + 1]{};
-            util::SNPrintf(old_path, sizeof(old_path), "%s:/atmosphere%s", ams::fs::impl::SdCardFileSystemMountName, TitleMapTempPath);
-            util::SNPrintf(new_path, sizeof(new_path), "%s:/atmosphere%s", ams::fs::impl::SdCardFileSystemMountName, TitleMapPath);
-            static_cast<void>(ams::fs::DeleteFile(new_path));
-            R_RETURN(ams::fs::RenameFile(old_path, new_path));
+            util::SNPrintf(old_path, sizeof(old_path), "%s:/atmosphere%s", ams::fs::impl::SdCardFileSystemMountName,
+                           TitleMapTempPath);
+            util::SNPrintf(new_path, sizeof(new_path), "%s:/atmosphere%s", ams::fs::impl::SdCardFileSystemMountName,
+                           TitleMapPath);
+            // Verify the completed temporary map before preserving the old
+            // primary. A failed rename must never delete the only good map.
+            const auto verify = [&](const char *path) -> Result {
+                ams::fs::FileHandle f{};
+                R_TRY(ams::fs::OpenFile(&f, path, ams::fs::OpenMode_Read));
+                ON_SCOPE_EXIT { ams::fs::CloseFile(f); };
+                s64 size{};
+                size_t got{};
+                TitleMapHeader header{};
+                R_TRY(ams::fs::GetFileSize(&size, f));
+                R_TRY(ams::fs::ReadFile(&got, f, 0, &header, sizeof(header)));
+                R_UNLESS(size == s64(sizeof(header) + count * sizeof(*entries)) && got == sizeof(header) &&
+                             header.magic == TitleMapMagic && header.version == TitleMapVersion && header.count == count &&
+                             !header.reserved,
+                         ncm::ResultInvalidOperation());
+                TitleMapEntry page[16];
+                for (u32 i = 0; i < count; i += 16) {
+                    const auto n = std::min<u32>(16, count - i);
+                    R_TRY(ams::fs::ReadFile(&got, f, sizeof(header) + i * sizeof(*entries), page, n * sizeof(*entries)));
+                    R_UNLESS(got == n * sizeof(*entries) && !std::memcmp(page, entries + i, got), ncm::ResultInvalidOperation());
+                }
+                R_SUCCEED();
+            };
+            R_TRY(verify(old_path));
+            for (const char *pending : {"/usb_content-repair.pending", "/usb-import.pending"}) {
+                FsFile marker{};
+                const auto rc = mitm::fs::OpenAtmosphereSdFile(&marker, pending, ams::fs::OpenMode_Read);
+                if (R_SUCCEEDED(rc)) {
+                    fsFileClose(&marker);
+                    R_RETURN(ncm::ResultInvalidOperation());
+                }
+                R_UNLESS(ams::fs::ResultPathNotFound::Includes(rc), rc);
+            }
+            char backup[ams::fs::EntryNameLengthMax + 1]{};
+            util::SNPrintf(backup, sizeof(backup), "%s:/atmosphere/usb_content/title_map.bin.bak", ams::fs::impl::SdCardFileSystemMountName);
+            ams::fs::FileHandle prior{};
+            const auto exists = ams::fs::OpenFile(&prior, new_path, ams::fs::OpenMode_Read);
+            bool moved = false;
+            if (R_SUCCEEDED(exists)) {
+                ams::fs::CloseFile(prior);
+                const auto removed = ams::fs::DeleteFile(backup);
+                R_UNLESS(R_SUCCEEDED(removed) || ams::fs::ResultPathNotFound::Includes(removed), removed);
+                R_TRY(ams::fs::RenameFile(new_path, backup));
+                moved = true;
+            } else
+                R_UNLESS(ams::fs::ResultPathNotFound::Includes(exists), exists);
+            const auto publish = ams::fs::RenameFile(old_path, new_path);
+            if (R_FAILED(publish)) {
+                if (moved)
+                    AMS_UNUSED(ams::fs::RenameFile(backup, new_path));
+                R_RETURN(publish);
+            }
+            R_RETURN(verify(new_path));
         }
 
         Result PersistProgramAlias(ncm::ProgramId alias_program_id, ncm::ProgramId program_id) {
@@ -1299,13 +1362,24 @@ namespace ams::mitm::usb_storage {
             R_UNLESS(!ncm::IsApplicationId(alias_program_id) && ncm::IsApplicationId(program_id), ncm::ResultContentNotFound());
 
             std::scoped_lock lk(g_persistent_title_map_mutex);
+            ncm::UsbMapWriteLease lease;
+            R_TRY(lease.Open(ams::fs::impl::SdCardFileSystemMountName));
+            for (const char *pending : {"/usb_content-repair.pending", "/usb-import.pending"}) {
+                FsFile marker{};
+                const auto rc = mitm::fs::OpenAtmosphereSdFile(&marker, pending, ams::fs::OpenMode_Read);
+                if (R_SUCCEEDED(rc)) {
+                    fsFileClose(&marker);
+                    R_RETURN(ncm::ResultInvalidOperation());
+                }
+                R_UNLESS(ams::fs::ResultPathNotFound::Includes(rc), rc);
+            }
 
             std::unique_ptr<TitleMapEntry[]> buffer(new (std::nothrow) TitleMapEntry[TitleMapMaxEntries]{});
-            R_UNLESS(buffer,ams::fs::ResultAllocationMemoryFailed());
-            auto *entries=buffer.get();
+            R_UNLESS(buffer, ams::fs::ResultAllocationMemoryFailed());
+            auto *entries = buffer.get();
             u32 count = 0;
             // Never turn an unreadable/oversized map into an empty rewrite.
-            R_UNLESS(ReadPersistentTitleMap(entries, std::addressof(count)),ncm::ResultInvalidOperation());
+            R_UNLESS(ReadPersistentTitleMap(entries, std::addressof(count)), ncm::ResultInvalidOperation());
 
             s32 program_index = -1;
             bool changed = false;
@@ -1655,28 +1729,45 @@ namespace ams::mitm::usb_storage {
         /* Use Atmosphere's original/current NCA driver. It retains the base
          * reader for indirect blocks rather than treating an update as a
          * standalone archive. Verification and compression layers stay active. */
-        Result OpenLaunchProgramStorage(std::shared_ptr<ams::fs::IStorage> *out,
-                ams::fs::CodeVerificationData *verification, const UsbLaunchSnapshot &snapshot,
-                fssystem::NcaFsHeader::FsType wanted_type, const LaunchPin &witness_pin = {}) {
+        Result OpenLaunchProgramStorage(std::shared_ptr<ams::fs::IStorage> *out, ams::fs::CodeVerificationData *verification,
+                                        const UsbLaunchSnapshot &snapshot, fssystem::NcaFsHeader::FsType wanted_type,
+                                        const LaunchPin &witness_pin = {}) {
             std::shared_ptr<fssystem::NcaReader> base, patch;
             const auto &content = snapshot.content;
-            R_TRY(OpenLaunchReader(std::addressof(base), snapshot, content.base,
-                fssystem::NcaHeader::ContentType::Program, content.program_id));
+            R_TRY(OpenLaunchReader(std::addressof(base), snapshot, content.base, fssystem::NcaHeader::ContentType::Program,
+                                   content.program_id));
             if (content.patch_id != 0) {
-                R_TRY(OpenLaunchReader(std::addressof(patch), snapshot, content.patch,
-                    fssystem::NcaHeader::ContentType::Program, content.program_id,
-                    content.patch_id + (content.program_id - content.application_id)));
+                R_TRY(OpenLaunchReader(std::addressof(patch), snapshot, content.patch, fssystem::NcaHeader::ContentType::Program,
+                                       content.program_id, content.patch_id + (content.program_id - content.application_id)));
             }
             /* An absent section inherits base. A present, invalid patch
              * section is an error and must not fall back to base. */
             auto current = patch ? patch : base;
             for (int pass = 0; pass < (patch ? 2 : 1); ++pass) {
                 for (s32 index = 0; index < fssystem::NcaHeader::FsCountMax; ++index) {
-                    if (!current->HasFsInfo(index)) continue;
+                    if (!current->HasFsInfo(index))
+                        continue;
                     fssystem::NcaFsHeaderReader header;
                     R_TRY(header.Initialize(*current, index));
-                    if (header.GetFsType() != wanted_type) continue;
+                    if (header.GetFsType() != wanted_type)
+                        continue;
                     std::shared_ptr<fssystem::IAsynchronousAccessSplitter> splitter;
+                    const auto trace_section = [&](u32 stage, Result result) {
+                        ams::usb::content::LoaderTraceInfo trace{};
+                        trace.program_id = content.program_id;
+                        trace.stage = stage;
+                        trace.result = result.GetValue();
+                        util::SNPrintf(trace.path, sizeof(trace.path),
+                                       "N4 section=%d kind=%u patch=%u compressed=%u crypto=%u hash=%u patch_meta=%u "
+                                       "base=%016llX update=%016llX",
+                                       index, static_cast<u32>(wanted_type), current == patch ? 1u : 0u,
+                                       header.ExistsCompressionLayer() ? 1u : 0u, static_cast<u32>(header.GetEncryptionType()),
+                                       static_cast<u32>(header.GetHashType()), header.ExistsPatchMetaHashLayer() ? 1u : 0u,
+                                       static_cast<unsigned long long>(content.application_id),
+                                       static_cast<unsigned long long>(content.patch_id));
+                        AppendLoaderTraceRecord(trace);
+                    };
+                    trace_section(205, ResultSuccess());
                     if (current == patch) {
                         if (base->HasFsInfo(index)) {
                             fssystem::NcaFsHeaderReader original_header;
@@ -1686,14 +1777,21 @@ namespace ams::mitm::usb_storage {
                         pw::Sample sample;
                         const auto epoch = game_wake::wake_epoch.load(std::memory_order_acquire);
                         const bool observing = wanted_type == fssystem::NcaFsHeader::FsType::RomFs &&
-                            witness_pin.get() == &snapshot && BeginPatchWitness(witness_pin, current.get(), sample);
-                        const Result created = fssystem::GetFileSystemCreatorInterfaces()->storage_on_nca_creator->CreateWithPatch(
-                            out, std::addressof(splitter), std::addressof(header), base, current, index);
-                        if (observing) FinishPatchWitness(witness_pin, index, epoch, sample, created, R_SUCCEEDED(CheckLaunchGeneration(snapshot)));
+                                               witness_pin.get() == &snapshot &&
+                                               BeginPatchWitness(witness_pin, current.get(), sample);
+                        const Result created =
+                            fssystem::GetFileSystemCreatorInterfaces()->storage_on_nca_creator->CreateWithPatch(
+                                out, std::addressof(splitter), std::addressof(header), base, current, index);
+                        trace_section(206, created);
+                        if (observing)
+                            FinishPatchWitness(witness_pin, index, epoch, sample, created,
+                                               R_SUCCEEDED(CheckLaunchGeneration(snapshot)));
                         R_TRY(created);
                     } else {
-                        R_TRY(fssystem::GetFileSystemCreatorInterfaces()->storage_on_nca_creator->Create(
-                            out, std::addressof(splitter), std::addressof(header), current, index));
+                        const auto created = fssystem::GetFileSystemCreatorInterfaces()->storage_on_nca_creator->Create(
+                            out, std::addressof(splitter), std::addressof(header), current, index);
+                        trace_section(206, created);
+                        R_TRY(created);
                     }
                     if (verification != nullptr) {
                         *verification = {};
@@ -1944,12 +2042,12 @@ namespace ams::mitm::usb_storage {
                     std::memcpy(path + 1, entries[i].name, name_length);
                     path[name_length + 1] = '\0';
 
-                    ams::usb::game_image::Reader reader;
-                    const auto open_result = reader.Open(std::addressof(g_filesystem_service), path);
+                    auto reader = std::unique_ptr<ams::usb::game_image::Reader>(new (std::nothrow) ams::usb::game_image::Reader);
+                    const auto open_result = reader ? reader->Open(std::addressof(g_filesystem_service), path) : Result(ams::usb::ResultMemAllocFailure());
                     auto result = open_result;
                     ams::usb::game_image::Info image_info{};
                     if (R_SUCCEEDED(result)) {
-                        result = reader.GetInfo(std::addressof(image_info));
+                        result = reader->GetInfo(std::addressof(image_info));
                     }
 
                     if (R_SUCCEEDED(result)) {
@@ -1968,7 +2066,7 @@ namespace ams::mitm::usb_storage {
                         record.size = R_SUCCEEDED(result) ? image_info.image_size : entries[i].size;
                         std::memcpy(record.path, path, sizeof(record.path));
                     }
-                    reader.Close();
+                    if (reader) reader->Close();
                 }
 
                 if (entry_count < util::size(entries)) {

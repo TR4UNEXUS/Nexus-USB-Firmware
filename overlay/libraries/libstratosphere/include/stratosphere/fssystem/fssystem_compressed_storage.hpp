@@ -528,7 +528,9 @@ namespace ams::fssystem {
                                 }
 
                                 /* Read each of the entries. */
-                                for (s32 entry_idx = 0; entry_idx < entry_count; ++entry_idx) {
+                                // The buffered path consumes entries in its inner loop. Advancing
+                                // here as well skips the first entry of the next buffer.
+                                for (s32 entry_idx = 0; entry_idx < entry_count;) {
                                     /* Determine the current read size. */
                                     bool will_use_pooled_buffer = false;
                                     const size_t cur_read_size = [&] () ALWAYS_INLINE_LAMBDA -> size_t {
@@ -650,6 +652,10 @@ namespace ams::fssystem {
                                             R_RETURN(m_data_storage.Read(required_access_physical_offset, dst, cur_read_size));
                                         })));
                                     }
+
+                                    // Direct reads consume exactly one entry. Buffered reads
+                                    // already advanced entry_idx for every decoded block.
+                                    if (!will_use_pooled_buffer) ++entry_idx;
 
                                     /* Advance on. */
                                     required_access_physical_offset += cur_read_size;

@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/ncm/ncm_usb_map_backup.hpp>
 #include <stratosphere/usb/usb_content_proxy.hpp>
 #include "ncm_content_meta_database_impl.hpp"
 #include <stratosphere/ncm/ncm_usb_title_map.hpp>
@@ -459,6 +460,7 @@ namespace ams::ncm {
             R_TRY(RegisterUsbTitleContent(ProgramId{key.id}, meta, control, program));
             R_TRY(RegisterUsbTitle(ProgramId{key.id}));
         }
+        const bool routing_changed=m_pending_usb_title_id_count || m_pending_stock_title_id_count;
         m_pending_usb_title_id_count = 0;
 
         /* A committed real-SD application must win over every older USB
@@ -470,6 +472,9 @@ namespace ams::ncm {
         }
         m_pending_stock_title_id_count = 0;
 
+        // Registration is already durable. Backup failure is diagnostic and
+        // must not report a successful install as failed or delete its files.
+        if (routing_changed) RequestUsbRoutingBackup();
         R_SUCCEED();
     }
 

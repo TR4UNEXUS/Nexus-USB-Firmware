@@ -61,7 +61,7 @@ namespace ams::usb::filesystem {
                     const size_t request = static_cast<size_t>(std::min<u64>(size, info.size - static_cast<u64>(offset)));
                     *out = 0;
                     R_SUCCEED_IF(request == 0);
-                    R_RETURN(m_service->ReadFileAtGeneration(m_path, static_cast<u64>(offset), buffer, request, out, m_media_generation));
+                    R_RETURN(m_service->ReadFileAtGeneration(m_path, static_cast<u64>(offset), buffer, request, out, m_media_generation, true));
                 }
 
                 virtual Result DoGetSize(s64 *out) override final {
@@ -360,11 +360,11 @@ namespace ams::usb::filesystem {
         R_RETURN(m_storage->GetFileInfoAtGeneration(path, out, media_generation));
     }
 
-    Result Service::ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation) {
+    Result Service::ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation, bool use_game_cache) {
         R_UNLESS(path != nullptr && out_read != nullptr, usb::ResultInvalidParameter());
         std::scoped_lock lk(m_mutex);
         R_UNLESS(m_mounted && m_storage != nullptr, usb::ResultNotInitialized());
-        R_RETURN(m_storage->ReadFileAtGeneration(path, offset, buffer, size, out_read, media_generation));
+        R_RETURN(m_storage->ReadFileAtGeneration(path, offset, buffer, size, out_read, media_generation, use_game_cache));
     }
 
     Result Service::InvalidateReadCacheAtGeneration(u64 media_generation) {

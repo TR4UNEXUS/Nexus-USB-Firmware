@@ -85,6 +85,14 @@ namespace ams::ldr {
         }
 
         void RecordUsbLoaderProbe(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess(), ncm::StorageId metadata_storage = ncm::StorageId::None) {
+            /* Boot sysmodules use StorageId::None, including third-party IDs
+             * outside Nintendo's system-ID range. They must never wait for
+             * the optional USB service just to publish a launch diagnostic.
+             * Guard before even querying SM, not only at selected call sites. */
+            if (!IsUsbUserProgramLocation(loc)) {
+                return;
+            }
+
             os::NativeHandle service_handle;
             if (!TryGetUsbContentServiceHandle(std::addressof(service_handle))) {
                 return;
@@ -107,6 +115,14 @@ namespace ams::ldr {
         }
 
         void RecordUsbLoaderTrace(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess(), ncm::StorageId metadata_storage = ncm::StorageId::None, ncm::StorageId content_storage = ncm::StorageId::None, const ncm::ContentId *content_id = nullptr, const char *path = nullptr) {
+            /* Boot sysmodules use StorageId::None, including third-party IDs
+             * outside Nintendo's system-ID range. They must never wait for
+             * the optional USB service just to publish a launch diagnostic.
+             * Guard before even querying SM, not only at selected call sites. */
+            if (!IsUsbUserProgramLocation(loc)) {
+                return;
+            }
+
             os::NativeHandle service_handle;
             if (!TryGetUsbContentServiceHandle(std::addressof(service_handle))) {
                 return;
@@ -510,7 +526,7 @@ namespace ams::ldr {
 
         /* Get the content path. */
         char content_path[fs::EntryNameLengthMax + 1];
-        const bool trace_application = !ncm::IsSystemProgramId(loc.program_id);
+        const bool trace_application = IsUsbUserProgramLocation(loc);
         if (trace_application) {
             RecordUsbLoaderTrace(usb::content::LoaderProbeStage::ProgramPathResolveAttempt, loc);
         }

@@ -63,7 +63,7 @@ namespace ams::usb::filesystem {
             Result ReadDirectory(const char *path, volume::DirectoryEntryInfo *out, size_t max_entries, size_t skip_entries, bool include_directories, bool include_files, size_t *out_count);
             Result GetFileInfoAtGeneration(const char *path, volume::FileInfo *out, u64 media_generation);
             Result InvalidateReadCacheAtGeneration(u64 media_generation);
-            Result ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation);
+            Result ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation, bool use_game_cache=false);
             Result ReadDirectoryAtGeneration(const char *path, volume::DirectoryEntryInfo *out, size_t max_entries, size_t skip_entries, bool include_directories, bool include_files, size_t *out_count, u64 media_generation);
             Result GetSpaceSize(u64 *out_free_size, u64 *out_total_size);
             bool IsMounted() const;

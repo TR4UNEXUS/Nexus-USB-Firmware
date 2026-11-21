@@ -39,3 +39,5 @@ hosts.yml
 private/
 secrets/
 nexus_private_content_keys.hpp
+
+*.ovl

@@ -23,7 +23,6 @@ namespace ams::usb::game_image {
         constexpr size_t Pfs0HeaderSize = 0x10;
         constexpr size_t Pfs0EntrySize = 0x18;
         constexpr size_t Hfs0EntrySize = 0x40;
-        constexpr size_t XciScanBufferSize = 16_KB;
 
         constexpr u16 LoadLittleEndian16(const u8 *src) {
             return static_cast<u16>(src[0]) |
@@ -57,8 +56,13 @@ namespace ams::usb::game_image {
         bool HasExtension(const char *path, const char *extension) {
             const size_t path_length = std::strlen(path);
             const size_t extension_length = std::strlen(extension);
-            return path_length >= extension_length &&
-                   std::memcmp(path + path_length - extension_length, extension, extension_length) == 0;
+            if (path_length < extension_length) return false;
+            for (size_t i = 0; i < extension_length; ++i) {
+                auto c = path[path_length-extension_length+i];
+                if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+                if (c != extension[i]) return false;
+            }
+            return true;
         }
 
     }
@@ -102,7 +106,7 @@ namespace ams::usb::game_image {
             result = this->ParseFilesystem(Format::Pfs0, 0);
         } else if (IsHfs0Magic(magic)) {
             result = this->ParseFilesystem(Format::Hfs0, 0);
-        } else if (IsHeadMagic(magic)) {
+        } else if (IsHeadMagic(magic) || HasExtension(path, ".xci")) {
             result = this->ParseXci();
         } else if (HasExtension(path, ".nsz") || HasExtension(path, ".NSZ")) {
             result = usb::ResultGameImageUnsupported();
@@ -198,7 +202,10 @@ namespace ams::usb::game_image {
         }
         strings[string_table_size] = '\0';
 
-        EntryInfo parsed_entries[MaxEntryCount]{};
+        // This reader is used from IPC threads. 128 entries do not fit on a
+        // 16 KiB stack; keep the bounded temporary table on the heap.
+        auto parsed_entries = std::unique_ptr<EntryInfo[]>(new (std::nothrow) EntryInfo[MaxEntryCount]{});
+        R_UNLESS(parsed_entries != nullptr, usb::ResultMemAllocFailure());
         for (u32 i = 0; i < entry_count; ++i) {
             const u8 *entry = entries.get() + static_cast<size_t>(i) * entry_size;
             const u64 relative_offset = LoadLittleEndian64(entry + 0);
@@ -213,7 +220,7 @@ namespace ams::usb::game_image {
             while (string_offset + name_length < string_table_size && strings[string_offset + name_length] != '\0') {
                 ++name_length;
             }
-            R_UNLESS(string_offset + name_length < string_table_size && name_length <= MaxEntryNameLength, usb::ResultGameImageInvalid());
+            R_UNLESS(name_length > 0 && string_offset + name_length < string_table_size && name_length <= MaxEntryNameLength, usb::ResultGameImageInvalid());
 
             parsed_entries[i].offset = data_offset + relative_offset;
             parsed_entries[i].size = size;
@@ -227,19 +234,29 @@ namespace ams::usb::game_image {
         m_info.filesystem_offset = filesystem_offset;
         m_info.data_offset = data_offset;
         m_info.string_table_size = string_table_size;
-        std::memcpy(m_entries, parsed_entries, sizeof(parsed_entries));
+        std::memcpy(m_entries, parsed_entries.get(), sizeof(m_entries));
         R_SUCCEED();
     }
 
     Result Reader::ParseXci() {
-        Result result = this->ParseFilesystem(Format::Hfs0, XciRootFilesystemOffset);
-        if (R_SUCCEEDED(result)) {
+        // HEAD follows the 0x100-byte signature, optionally after a 0x1000
+        // key area. Honour its root offset instead of guessing a partition.
+        for (const u64 prefix : {u64(0), u64(0x1000)}) {
+            u8 header[0x40]{};
+            const u64 at = prefix+0x100;
+            if (at > m_info.image_size || sizeof(header) > m_info.image_size-at) continue;
+            R_TRY(ReadBytes(at, header, sizeof(header)));
+            if (!IsHeadMagic(header)) continue;
+            const auto root = LoadLittleEndian64(header+0x30);
+            const auto size = LoadLittleEndian64(header+0x38);
+            R_UNLESS(root >= 0x200 && prefix <= m_info.image_size && root <= m_info.image_size-prefix,
+                     usb::ResultGameImageInvalid());
+            const auto absolute = prefix+root;
+            R_UNLESS(size >= Pfs0HeaderSize && size <= m_info.image_size-absolute, usb::ResultGameImageInvalid());
+            R_TRY(ParseFilesystem(Format::Hfs0, absolute));
+            R_UNLESS(m_info.data_offset-absolute <= size, usb::ResultGameImageInvalid());
             m_info.format = Format::Xci;
             R_SUCCEED();
-        }
-        if (result.GetValue() != usb::ResultGameImageInvalid().GetValue() &&
-            result.GetValue() != usb::ResultGameImageTooManyEntries().GetValue()) {
-            R_THROW(result);
         }
 
         u64 root_offset = 0;
@@ -251,19 +268,9 @@ namespace ams::usb::game_image {
 
     Result Reader::LocateXciRootFilesystem(u64 *out_offset) {
         R_UNLESS(out_offset != nullptr, usb::ResultInvalidParameter());
-        const u64 scan_limit = std::min<u64>(m_info.image_size, XciScanLimit);
-        alignas(0x1000) u8 buffer[XciScanBufferSize]{};
-
-        for (u64 chunk_offset = 0; chunk_offset < scan_limit; chunk_offset += XciScanBufferSize) {
-            const size_t chunk_size = static_cast<size_t>(std::min<u64>(XciScanBufferSize, scan_limit - chunk_offset));
-            R_TRY(this->ReadBytes(chunk_offset, buffer, chunk_size));
-
-            for (size_t i = 0; i + sizeof(u32) <= chunk_size; i += XciScanStep) {
-                if (!IsHfs0Magic(buffer + i)) {
-                    continue;
-                }
-
-                const u64 candidate = chunk_offset + i;
+        // Legacy headerless dumps have two known layouts. Never scan arbitrary
+        // bytes and mistake a nested partition for the cartridge root.
+        for (const u64 candidate : {XciRootFilesystemOffset, XciRootFilesystemOffset+0x1000}) {
                 const auto result = this->ParseFilesystem(Format::Hfs0, candidate);
                 if (R_SUCCEEDED(result)) {
                     *out_offset = candidate;
@@ -273,7 +280,6 @@ namespace ams::usb::game_image {
                     result.GetValue() != usb::ResultGameImageTooManyEntries().GetValue()) {
                     R_THROW(result);
                 }
-            }
         }
 
         R_THROW(usb::ResultGameImageInvalid());

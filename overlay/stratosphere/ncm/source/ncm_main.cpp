@@ -189,9 +189,10 @@ namespace ams {
             R_ABORT_UNLESS(g_lr_server_manager.Initialize());
             R_ABORT_UNLESS(g_lr_server_manager.StartThreads());
 
-            /* Wait indefinitely. */
-            g_ncm_server_manager.Wait();
-            g_lr_server_manager.Wait();
+            /* Both IPC servers already own their threads. Use the existing
+             * otherwise-idle main thread for best-effort routing backups, so
+             * boot gets no new thread, stack reservation or USB dependency. */
+            RunUsbRoutingBackupWorker();
         }
 
     }

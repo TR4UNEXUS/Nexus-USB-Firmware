@@ -70,6 +70,7 @@ namespace ams::usb::storage {
         if (this->IsRunning()) {
             static_cast<void>(this->Stop());
         }
+        delete m_game_read_cache;m_game_read_cache=nullptr;
     }
 
     Result Service::BeginSystemOperation() {
@@ -183,6 +184,7 @@ namespace ams::usb::storage {
         if (!m_checkpoint_pending || IsSystemPowerPaused()) return;
         m_checkpoint_pending = false;
         m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
         Status status{};
         if (R_FAILED(GetStatus(&status)) || status.state != State::Ready) return;
         {
@@ -239,6 +241,7 @@ namespace ams::usb::storage {
             m_sleep_had_media = m_device.IsInitialized();
             const bool checkpoint_valid = m_checkpoint_valid;
             m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
             m_checkpoint_pending = false;
             sleep_diagnostics::prepare_stage.store(sleep_diagnostics::CheckVolume);
             sleep_diagnostics::checkpoint_used.store(0);
@@ -531,6 +534,7 @@ namespace ams::usb::storage {
                 sleep_diagnostics::rebind_stage.store(7);
             }
             m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
             m_checkpoint_pending = m_sleep_had_media && m_writable_ready;
             sleep_diagnostics::last_result.store(0);
             m_power_cv.Broadcast();
@@ -775,15 +779,18 @@ namespace ams::usb::storage {
         R_TRY(CheckMediaGenerationLocked(media_generation));
         // The native read-only FAT32/exFAT readers already read through to disk.
         R_SUCCEED_IF(!m_writable_ready);
+        if (m_game_read_cache) m_game_read_cache->Clear();
         const Result rc = m_writable_volume.InvalidateReadCache();
         CompleteIoLocked(rc);
         R_RETURN(rc);
     }
 
-    Result Service::ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation) {
+    Result Service::ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation, bool use_game_cache) {
         R_TRY(BeginSystemOperation());
         ON_SCOPE_EXIT { EndSystemOperation(); };
         R_UNLESS(path != nullptr && out_read != nullptr, usb::ResultInvalidParameter());
+        if (use_game_cache) m_waiting_game_reads.fetch_add(1,std::memory_order_relaxed);
+        ON_SCOPE_EXIT { if (use_game_cache) m_waiting_game_reads.fetch_sub(1,std::memory_order_relaxed); };
         Result result = ResultSuccess();
         {
             pause_diagnostics::Scope volume_wait(pause_diagnostics::Stage::VolumeReadWait, size);
@@ -792,6 +799,28 @@ namespace ams::usb::storage {
             startup_lock_wait.Finish();
             volume_wait.Finish(ResultSuccess());
             R_TRY(this->CheckMediaGenerationLocked(media_generation));
+            *out_read=0;
+            if (use_game_cache && buffer && size && size<=game_read::Cache::ReadAheadBytes && m_writable_ready) {
+                if (!m_game_read_cache) m_game_read_cache=new (std::nothrow) game_read::Cache;
+                if (m_game_read_cache) {
+                    if (m_game_read_cache->Read(path,media_generation,offset,buffer,size)) {*out_read=size;R_SUCCEED();}
+                    volume::FileInfo info{};
+                    result=m_writable_volume.GetFileInfo(path,&info);
+                    if (R_SUCCEEDED(result) && !info.directory && offset<=info.size && size<=info.size-offset) {
+                        const u32 cached=m_game_read_cache->Fill(path,media_generation,offset,info.size,buffer,size,
+                            [&](u64 start,void *data,size_t count)->u32 {
+                                size_t got{};auto r=m_writable_volume.ReadFile(path,start,data,count,&got);
+                                if (R_SUCCEEDED(r) && got!=count) r=usb::ResultTransactionError();
+                                return r.GetValue();
+                            });
+                        if (cached!=UINT32_MAX) {
+                            result=Result(cached);if (R_SUCCEEDED(result)) *out_read=size;
+                            else m_game_read_cache->Clear();
+                            this->CompleteIoLocked(result);R_RETURN(result);
+                        }
+                    }
+                }
+            }
             if (m_writable_ready) {
                 result = m_writable_volume.ReadFile(path, offset, buffer, size, out_read);
             } else {
@@ -904,6 +933,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.CreateFile(path, size) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -926,6 +956,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.ResizeFile(path, size) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -948,6 +979,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.DeleteFile(path) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -970,6 +1002,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.RenameFile(old_path, new_path) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -984,6 +1017,8 @@ namespace ams::usb::storage {
         R_UNLESS(!m_read_only, usb::ResultOperationDenied());
         R_UNLESS(path != nullptr && out_written != nullptr, usb::ResultInvalidParameter());
         *out_written = 0;
+        for (unsigned n=0;n<4 && m_waiting_game_reads.load(std::memory_order_relaxed);++n)
+            os::SleepThread(TimeSpan::FromMilliSeconds(1));
         Result result = ResultSuccess();
         {
             pause_diagnostics::Scope volume_wait(pause_diagnostics::Stage::VolumeWriteWait, size);
@@ -994,6 +1029,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.WriteFile(path, offset, buffer, size, out_written) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -1016,6 +1052,7 @@ namespace ams::usb::storage {
             result = this->CheckMediaGenerationLocked(media_generation);
             if (R_SUCCEEDED(result)) {
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = false;
                 result = m_writable_ready ? m_writable_volume.CreateDirectory(path) : static_cast<Result>(usb::ResultOperationDenied());
             }
@@ -1692,6 +1729,7 @@ namespace ams::usb::storage {
             {
                 std::scoped_lock volume_lk(m_volume_mutex);
                 m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
                 m_checkpoint_pending = m_writable_ready && !m_skip_checkpoint_on_next_mount;
                 m_skip_checkpoint_on_next_mount = false;
                 this->SetReady(selected_geometry, selected_inquiry, selected_partition, selected_filesystem_type, selected_partition_index, selected_partition_count, selected_interface_id, selected_lun, m_writable_ready);
@@ -1779,6 +1817,7 @@ namespace ams::usb::storage {
     }
 
     void Service::CompleteIoLocked(Result result) {
+        if (R_FAILED(result) && m_game_read_cache) m_game_read_cache->Clear();
         std::scoped_lock lk(m_mutex);
         m_status.last_io_result = result.GetValue();
         if (!ShouldDisconnectAfterIo(result) || m_status.state != State::Ready) return;
@@ -1835,6 +1874,7 @@ namespace ams::usb::storage {
     void Service::Disconnect() {
         std::scoped_lock lk(m_volume_mutex);
         m_checkpoint_valid = false;
+            if (m_game_read_cache) m_game_read_cache->Clear();
         m_checkpoint_pending = false;
         // Stop while parked must not flush dirty handles into a sleeping host.
         if (IsSystemPowerPaused()) m_device.Quarantine();
@@ -1921,7 +1961,7 @@ namespace ams::usb::storage {
         R_RETURN(usb::ResultOperationDenied());
     }
 
-    Result Service::ReadFileAtGeneration(const char *, u64, void *, size_t, size_t *, u64) {
+    Result Service::ReadFileAtGeneration(const char *, u64, void *, size_t, size_t *, u64, bool) {
         R_RETURN(usb::ResultOperationDenied());
     }
 

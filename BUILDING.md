@@ -1,6 +1,6 @@
 # Building the USB integration
 
-This snapshot targets Nexus Atmosphere 1.12.2 N1 and Switch system version 23.5.0. Install the toolchain described in [Nexus Atmosphere's build instructions](https://github.com/TR4UNEXUS/Nexus-Atmosphere/blob/c246c2ee3866c4897cb5741f1cbf5026a1000582/BUILDING.md). Use Linux or WSL with Git and Python 3. The release firmware used GCC 15.2.0 from devkitPro for both ARM toolchains.
+This source targets Nexus Atmosphere 1.12.2 HS3R1 and Switch system version 23.5.0. Install the Linux/WSL toolchain described in the [pinned core's build guide](https://github.com/TR4UNEXUS/Nexus-Atmosphere/blob/21084836f4b7e70f01026090cd6bf33fe7a7ea83/BUILDING.md): devkitPro devkitA64/devkitARM, libnx, deko3d, Switch tools, Make, Git and Python 3. The release used GCC 15.2.0 for both ARM toolchains.
 
 ```sh
 git clone https://github.com/TR4UNEXUS/Nexus-USB-Firmware.git
@@ -8,29 +8,30 @@ cd Nexus-USB-Firmware
 python3 tools/prepare.py
 cd build/Atmosphere
 export DEVKITPRO=/opt/devkitpro
-JOBS=2 sh scripts/build-nexus.sh
+export DEVKITA64="$DEVKITPRO/devkitA64"
+export LIBNX="$DEVKITPRO/libnx"
+export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
+JOBS=4 sh scripts/build-nexus.sh
+make -C companions/usb-content-overlay -j4
 ```
 
-The preparation step checks out the exact commit in `base.json`, then copies this repository's `overlay` and `optional` source over it. It refuses to replace an existing destination. Keep local changes in these source folders or in your own development branch; the tool never cleans a working tree for you. Use `--destination <new-directory>` for another prepared tree, or `--source-repository <local-Nexus-Atmosphere-clone>` to reuse an existing clone that contains the pinned commit.
+Preparation checks out the full commit in `base.json`, then copies `overlay` and the historical `optional` source. It refuses an existing destination. Use `--destination <new-directory>` for another tree or `--source-repository <local-Nexus-Atmosphere-clone>` to use a local clone containing the pinned commit. Make changes in this repository's source folders or a development branch; preparation does not clean working trees.
 
-The default build uses the USB-only Loader. After building the core, build the matching HOC variant from the same prepared tree:
+The core target also builds the independent Nexus Loader. Package `fusee/out/nintendo_nx_arm_armv4t/release/package3` as `atmosphere/package3` and `stratosphere/nexus_loader/out/nintendo_nx_arm64_armv8a/release/nexus_loader.kip` as `atmosphere/kips/nexus-loader.kip`. Copy the overlay's `usb-content-status.ovl` to `switch/.overlays/`.
+
+Both HOC and No-HOC need the same matching Nexus core and Loader. HOC is now separate: the HOC test pack adds the unmodified upstream HOC 2.6.1 release and its supporting files. Do not build an old combined HOC Loader from `optional`. Keep the Nexus boot entry when updating HOC and use a version compatible with your system firmware. See the prepared core's `BUILDING.md` for exact Hekate entries and dependency versions.
+
+Boot through **Hekate → Launch** with `pkg3=atmosphere/package3` and `kip1=atmosphere/kips/nexus-loader.kip`. HOC additionally uses `kip1=atmosphere/kips/hoc.kip` and `secmon=atmosphere/exosphere.bin`. Direct Fusee boot does not load the external Nexus Loader in these test packs.
+
+Run the new host checks from the prepared tree:
 
 ```sh
-JOBS=2 sh scripts/build-nexus.sh hoc
+python3 tests/nexus-integration/run_hs3_frontend_tests.py
+python3 tests/nexus-integration/run_hs3_sm_tests.py
+python3 companions/usb-content-overlay/tests/run.py
+python3 tests/nexus-integration/run_compressed_read_tests.py
 ```
 
-The core output is `fusee/out/nintendo_nx_arm_armv4t/release/package3`. The optional HOC output is `optional/loader-hoc-2.6.0/out/nintendo_nx_arm64_armv8a/release/loader.kip`. The HOC source has generic defaults; personal overclock settings are not included. The older `optional/loader-no-hoc` and `optional/loader-hoc` folders preserve the HS2 separation experiment and are not the current release's Loader selection.
+The core guide lists the existing registration, mapping and sleep tests. G++ with address/undefined-behaviour sanitizers is required. These checks exercise production logic with instrumented services; they do not replace console testing of boot, game launches, wake or physical USB removal.
 
-Run the host checks from the prepared tree:
-
-```sh
-python3 tests/nexus-integration/run_u2_registration_tests.py
-python3 tests/nexus-integration/run_u1_metadata_routing_tests.py
-python3 tests/nexus-integration/run_u1_ownership_tests.py
-python3 tests/nexus-integration/run_db2_paged_tests.py
-python3 tests/nexus-integration/run_usb_sleep_tests.py --out build/host-tests/sleep
-```
-
-The host checks use instrumented backends. They do not replace Switch testing. This source update matches the published Nexus Atmosphere revision; it does not claim a new clean cross-build or a new hardware validation run.
-
-Update `base.json` deliberately when rebasing onto a newer core. Keep Loader, service and database changes together. Use the matching Nexus HOC Loader when assembling an HOC pack; an unrelated HOC KIP can replace the USB hooks. See the prepared tree's `BUILDING.md` for the separate Hekate, overlay and other files needed for a complete pack. This repository produces source builds, not a complete HATS ZIP.
+The public overlay Makefile was cross-built and the new portable tests passed. The firmware source matches the audited HS3R1 build inputs, apart from documented public branding/resource paths and whitespace cleanup. A full clean rebuild of this public checkout is not claimed. No generated firmware or personal data is published here. The source build does not assemble a complete HATS ZIP; see the pinned core guide for the other pack components.

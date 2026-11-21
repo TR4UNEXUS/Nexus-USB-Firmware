@@ -207,7 +207,7 @@ namespace ams::mitm::usb_storage {
                     R_SUCCEED_IF(request == 0);
                     size_t read = 0;
                     R_TRY(ConvertUsbFileSystemResult(m_service->ReadFileAtGeneration(
-                        m_path, static_cast<u64>(offset), buffer, request, std::addressof(read), m_media_generation)));
+                        m_path, static_cast<u64>(offset), buffer, request, std::addressof(read), m_media_generation, m_mode==fs::OpenMode_Read)));
                     /* A short result inside the known file is not EOF. Do not
                      * report success with incomplete NCA/metadata bytes. */
                     R_UNLESS(read == request, fs::ResultUnexpectedInLocalFileSystemA());

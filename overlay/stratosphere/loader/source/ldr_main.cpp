@@ -110,6 +110,7 @@ namespace ams {
             lr::Initialize();
             R_ABORT_UNLESS(fsldrInitialize());
             spl::Initialize();
+
             /* Verify that we can sanely execute. */
             ams::CheckApiVersion();
         }

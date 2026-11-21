@@ -19,6 +19,7 @@
 #define AMS_STRATOSPHERE_USB_STORAGE_HPP
 
 #include <vapours.hpp>
+#include <stratosphere/usb/usb_game_read_cache.hpp>
 #include <stratosphere/os/os_sdk_mutex.hpp>
 #include <stratosphere/os/os_sdk_condition_variable.hpp>
 #include <stratosphere/usb/usb_sleep_core.hpp>
@@ -109,6 +110,8 @@ namespace ams::usb::storage {
         private:
             mutable os::SdkMutex m_mutex{};
             mutable os::SdkMutex m_volume_mutex{};
+            game_read::Cache *m_game_read_cache{}; // allocated on first eligible read, never during boot
+            std::atomic<u32> m_waiting_game_reads{};
             mutable os::SdkMutex m_power_mutex{};
             os::SdkConditionVariable m_power_cv{};
             sleep::Gate m_power_gate{};
@@ -167,7 +170,7 @@ namespace ams::usb::storage {
             Result ReadDirectory(const char *path, volume::DirectoryEntryInfo *out, size_t max_entries, size_t skip_entries, bool include_directories, bool include_files, size_t *out_count);
             Result GetFileInfoAtGeneration(const char *path, volume::FileInfo *out, u64 media_generation);
             Result InvalidateReadCacheAtGeneration(u64 media_generation);
-            Result ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation);
+            Result ReadFileAtGeneration(const char *path, u64 offset, void *buffer, size_t size, size_t *out_read, u64 media_generation, bool use_game_cache = false);
             Result ReadDirectoryAtGeneration(const char *path, volume::DirectoryEntryInfo *out, size_t max_entries, size_t skip_entries, bool include_directories, bool include_files, size_t *out_count, u64 media_generation);
             Result GetSpaceSize(u64 *out_free_size, u64 *out_total_size);
             Result IsWritable(bool *out) const;

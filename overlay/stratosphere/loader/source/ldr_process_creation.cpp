@@ -20,7 +20,6 @@
 #include "ldr_launch_record.hpp"
 #include "ldr_meta.hpp"
 #include "ldr_patcher.hpp"
-#include "ldr_qlaunch_compat.hpp"
 #include "ldr_process_creation.hpp"
 #include "ldr_ro_manager.hpp"
 
@@ -120,8 +119,6 @@ namespace ams::ldr {
 
         /* Global NSO header cache. */
         NsoHeader g_nso_headers[Nso_Count];
-
-        /* Pcv/Ptm/NvServices check cache. */
 
         /* Global Zstd decompression context. */
         alignas(8) u8 g_zstd_dctx_workspace[util::DecompressZstdWithBicWorkBufferSizeDefault];
@@ -496,7 +493,7 @@ namespace ams::ldr {
             if (meta_flags0 & Npdm::MetaFlag0_EnableAddressSanitizer) {
                 flags |= svc::CreateProcessParameterFlag_EnableAddressSanitizer;
             }
-            
+
             /* 23.0.0+/meso Set Enable Shadow Stack. */
             if (meta_flags1 & Npdm::MetaFlag1_EnableShadowStack) {
                 flags |= svc::CreateProcessParameterFlag_EnableShadowStack;
@@ -570,7 +567,6 @@ namespace ams::ldr {
                 out->nso_size[i] = std::max(out->nso_size[i], ro_end);
                 out->nso_size[i] = std::max(out->nso_size[i], rw_end);
                 out->nso_size[i] += static_cast<size_t>(ctx.headers[i].bss_size);
-
 
                 const size_t aligned_up_size = util::AlignUp(out->nso_size[i], os::MemoryPageSize) & (AutoLoadModuleSizeMax - 1);
                 R_UNLESS(out->nso_size[i] <= aligned_up_size, ldr::ResultInvalidNso());
@@ -700,7 +696,7 @@ namespace ams::ldr {
             R_SUCCEED();
         }
 
-        Result LoadAutoLoadModule(os::NativeHandle process_handle, fs::FileHandle file, ncm::ProgramId program_id, bool is_main_nso, const NsoHeader *nso_header, uintptr_t nso_address, size_t nso_size, size_t map_size) {
+        Result LoadAutoLoadModule(os::NativeHandle process_handle, fs::FileHandle file, const NsoHeader *nso_header, uintptr_t nso_address, size_t nso_size, size_t map_size) {
             const bool is_zbic = (nso_header->flags & NsoHeader::Flag_UseZbicCompression) != 0;
 
             /* Map and read data from file. */
@@ -737,22 +733,8 @@ namespace ams::ldr {
                 /* Apply embedded patches. */
                 ApplyEmbeddedPatchesToModule(nso_header->module_id, map_address, nso_size);
 
-                /* C9: Nexus qlaunch theme compatibility on 23.0.0/23.0.1, without replacing the
-                 * USB/native-error patch policy or patching other programs. */
-                if (program_id == ncm::SystemAppletId::Qlaunch && is_main_nso
-                        && nso_header->text_dst_offset <= map_size
-                        && nso_header->text_size <= map_size - nso_header->text_dst_offset) {
-                    qlaunch_compat::ApplyForFirmware(static_cast<u32>(hos::GetVersion()),
-                        reinterpret_cast<u8 *>(map_address + nso_header->text_dst_offset), nso_header->text_size);
-                }
-
                 /* Apply IPS patches. */
                 LocateAndApplyIpsPatchesToModule(nso_header->module_id, map_address, nso_size);
-
-
-                /* Record the final bytes after both embedded and SD IPS
-                 * patches. This is active only for exact diagnostic targets. */
-                FinalizeEmbeddedPatchDiagnostics(program_id, is_main_nso, nso_header->module_id, map_address, nso_size);
             }
 
             /* Set permissions. */
@@ -773,7 +755,7 @@ namespace ams::ldr {
             R_SUCCEED();
         }
 
-        Result LoadAutoLoadModules(const ProcessInfo *process_info, ncm::ProgramId program_id, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
+        Result LoadAutoLoadModules(const ProcessInfo *process_info, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
             /* Load each NSO. */
             const uintptr_t total_end = process_info->code_address + process_info->total_size;
 
@@ -788,7 +770,7 @@ namespace ams::ldr {
                 R_TRY(fs::OpenFile(std::addressof(file), GetNsoPath(nso_idx), fs::OpenMode_Read));
                 ON_SCOPE_EXIT { fs::CloseFile(file); };
 
-                R_TRY(LoadAutoLoadModule(process_info->process_handle, file, program_id, nso_idx == Nso_Main, ctx.headers + i,
+                R_TRY(LoadAutoLoadModule(process_info->process_handle, file, ctx.headers + i,
                       process_info->nso_address[i], process_info->nso_size[i], map_size));
             }
 
@@ -833,7 +815,7 @@ namespace ams::ldr {
             ON_RESULT_FAILURE { R_DISCARD(svc::CloseHandle(process_handle)); };
 
             /* Load all auto load modules. */
-            R_RETURN(LoadAutoLoadModules(out, meta->aci->program_id, ctx, argument));
+            R_RETURN(LoadAutoLoadModules(out, ctx, argument));
         }
 
     }
@@ -882,18 +864,6 @@ namespace ams::ldr {
         ProcessInfo info;
         R_TRY(CreateProcessAndLoadAutoLoadModules(std::addressof(info), std::addressof(meta), ctx, argument, flags, resource_limit));
 
-        /* The process cannot run yet. Only verified USB ExeFS launches bind
-         * their immutable resource snapshot. Native/HBL launches make no
-         * service request and cannot inherit an old title-map association. */
-        if (mount.UsesUsbCode()) {
-            const Result bind_result = BindUsbProcessContent(pin_id, loc.program_id, os::GetProcessId(info.process_handle));
-            if (R_FAILED(bind_result)) {
-                R_DISCARD(svc::CloseHandle(info.process_handle));
-                R_RETURN(bind_result);
-            }
-        }
-
-
         /* Register NSOs with the RoManager. */
         {
             /* Nintendo doesn't validate this get, but we do. */
@@ -917,7 +887,6 @@ namespace ams::ldr {
 
         /* Clear the external code for the program. */
         fssystem::DestroyExternalCode(loc.program_id);
-        ClearUsbExternalCodeVerification(loc.program_id);
 
         /* Note that we've created the program. */
         SetLaunchedBootProgram(loc.program_id);
@@ -953,7 +922,6 @@ namespace ams::ldr {
 
     Result UnpinProgram(PinId id) {
         R_UNLESS(RoManager::GetInstance().Free(id), ldr::ResultNotPinned());
-        ReleaseUsbProcessContent(id);
         R_SUCCEED();
     }
 

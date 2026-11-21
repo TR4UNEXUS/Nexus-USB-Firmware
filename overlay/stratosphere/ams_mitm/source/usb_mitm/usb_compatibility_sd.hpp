@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
 #include <stratosphere/usb/usb_compatibility.hpp>
+#include <stratosphere/usb/usb_game_read_cache.hpp>
 
 namespace ams::mitm::usb_storage::compatibility_sd {
     namespace policy = ams::usb::compatibility;
@@ -60,7 +61,10 @@ namespace ams::mitm::usb_storage::compatibility_sd {
         return util::SNPrintf(out, size,
             "usb_compatibility=C12\nusb_compatibility_log=atmosphere/logs/usb_compatibility.txt\n"
             "usb_compatibility_save_result=0x%08X\nusb_compatibility_saved_map_revision=%u\n"
-            "usb_compatibility_saved_selection_revision=%u\nusb_compatibility_usb3=host_settings_unchanged\n",
-            save_result, saved_map_revision, saved_selection_revision);
+            "usb_compatibility_saved_selection_revision=%u\nusb_compatibility_usb3=host_settings_unchanged\n"
+            "usb_game_cache_hits=%llu\nusb_game_cache_misses=%llu\nusb_game_cache_saved_bytes=%llu\nusb_game_cache_invalidations=%llu\n",
+            save_result, saved_map_revision, saved_selection_revision,
+            static_cast<unsigned long long>(usb::game_read::hits.load()),static_cast<unsigned long long>(usb::game_read::misses.load()),
+            static_cast<unsigned long long>(usb::game_read::bytes_saved.load()),static_cast<unsigned long long>(usb::game_read::invalidations.load()));
     }
 }
