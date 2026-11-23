@@ -14,6 +14,8 @@ struct Backend {
     bool closed{},storage_failed{},queued{},finished{};unsigned background_active{},storage_active{};
     unsigned drains{},prepares{},resumes{},acks{},opens{},failures{};
     std::uint32_t drain_result{},prepare_result{},reserve_result{},resume_result{},ack_result{},last_failure{};
+    std::uint32_t restart_result{13};unsigned restarts{};
+    std::uint32_t RestartFailedStorage(){++restarts;CHECK(!background_active&&!storage_active&&acks&&!ack_result);if(!restart_result)storage_failed=false;return restart_result;}
     std::string order;
     void CloseBackground(){closed=true;order+='C';}
     std::uint32_t DrainBackground(){++drains;order+='D';CHECK(closed);return background_active?10:drain_result;}
@@ -164,4 +166,15 @@ static void ActivityRace(){
     done=true;for(auto&t:workers)t.join();CHECK(!violation.load()&&!gate.Active()&&admitted.load()>=100);
     gate.Close();CHECK(!gate.TryEnter());
 }
-int main(){NominalAndCancellation();GameReadAcrossPartialWake();MinimumAwakeDrainsBeforeAck();DrainAndFailures();ActivityRace();std::printf("PASS %u PSC lifecycle and concurrent background gate checks\n",checks);return 0;}
+static void FailedDiscoveryRestart(){
+    Coordinator c;Backend b;b.prepare_result=77;b.restart_result=0;
+    CHECK(c.Handle(1,b).ack_attempted&&c.GetPhase()==Phase::Failed&&!b.restarts);
+    CHECK(c.Handle(2,b).ack_attempted&&!b.restarts);
+    CHECK(c.Handle(0,b).ack_attempted&&b.restarts==1&&c.GetPhase()==Phase::Awake&&!c.Failure()&&!b.storage_failed);
+    b.prepare_result=0;CHECK(c.Handle(1,b).ack_attempted&&c.GetPhase()==Phase::Asleep);
+    CHECK(c.Handle(0,b).ack_attempted);b.resume_result=88;b.finished=true;c.PollWake(b);
+    CHECK(c.GetPhase()==Phase::Awake&&b.restarts==2&&!c.Failure());
+    Coordinator noack;Backend n;n.restart_result=0;noack.Fail(77,n);n.ack_result=99;
+    CHECK(noack.Handle(0,n).result==77&&!n.restarts&&noack.GetPhase()==Phase::Failed);
+}
+int main(){FailedDiscoveryRestart();NominalAndCancellation();GameReadAcrossPartialWake();MinimumAwakeDrainsBeforeAck();DrainAndFailures();ActivityRace();std::printf("PASS %u PSC lifecycle and concurrent background gate checks\n",checks);return 0;}

@@ -35,6 +35,7 @@
 #include "usb_keep_alive.hpp"
 #include "usb_scsi_recovery.hpp"
 #include "usb_startup.hpp"
+#include <stratosphere/usb/usb_command_health.hpp>
 
 #if defined(ATMOSPHERE_OS_HORIZON)
 
@@ -52,8 +53,9 @@ namespace ams::usb::mass_storage {
 
         constexpr u8 CswStatusPassed = 0x00;
 
-        void RecordCommandResult(u8 opcode, Result result) {
+        void RecordCommandResult(u8 opcode, Result result, command_health::Phase phase) {
             const u64 now = impl::UsbNowNs();
+            command_health::Record(phase, opcode, result.GetValue(), now);
             io_diagnostics::last_command_ns.store(now, std::memory_order_relaxed);
             if (R_FAILED(result)) {
                 io_diagnostics::transport_failures.fetch_add(1, std::memory_order_relaxed);
@@ -205,6 +207,7 @@ namespace ams::usb::mass_storage {
         io_diagnostics::startup_endpoints.store(0);
         io_diagnostics::startup_packets.store(0);
 
+        command_health::media_ready.store(false);
         m_wake_read_only = wake_deadline != 0;
         m_system_power_deadline = wake_deadline;
         bool success = false;
@@ -646,7 +649,7 @@ namespace ams::usb::mass_storage {
                 ? this->ExecuteCommandOnce(command, sizeof(command), DataDirection::None, nullptr, 0, std::addressof(transferred), command_deadline,
                     opcode == ScsiTestUnitReady ? std::addressof(csw_recovery_used) : nullptr)
                 : this->ExecuteCommandUasOnce(command, sizeof(command), DataDirection::None, nullptr, 0, std::addressof(transferred), command_deadline);
-            RecordCommandResult(opcode, result);
+            RecordCommandResult(opcode, result, m_wake_read_only ? command_health::Phase::Wake : !command_health::media_ready.load() ? command_health::Phase::Startup : command_health::Phase::Live);
             if (R_SUCCEEDED(result)) {
                 if (opcode == ScsiTestUnitReady) {
                     io_diagnostics::startup_stage.store(4);
@@ -690,7 +693,7 @@ namespace ams::usb::mass_storage {
                 const u32 sense = R_SUCCEEDED(sense_result) ? reader_fixed_sense::AllocatedCurrentSense(
                     m_data_buffer, sense_size, sense_request_size, impl::StartupSense(m_data_buffer, sense_size)) : 0;
                 if (fixed_request) reader_fixed_sense::Finish(sense_result.GetValue(), sense_size, sense);
-                RecordCommandResult(ScsiRequestSense, sense_result);
+                RecordCommandResult(ScsiRequestSense, sense_result, m_wake_read_only ? command_health::Phase::Wake : !command_health::media_ready.load() ? command_health::Phase::Startup : command_health::Phase::Live);
                 if (R_FAILED(sense_result)) {
                     if (out_transport_failed != nullptr && opcode == ScsiTestUnitReady && !usb::ResultScsiCommandFailed::Includes(sense_result))
                         *out_transport_failed = true;
@@ -932,7 +935,7 @@ namespace ams::usb::mass_storage {
             : ExecuteCommandOnce(command,sizeof(command),DataDirection::None,nullptr,0,&transferred,deadline);
         const Result completion_result = R_SUCCEEDED(result) && transferred != 0 ? usb::ResultTransactionError() : result;
         completion_timer.Finish(completion_result.GetValue());
-        RecordCommandResult(command[0],result);
+        RecordCommandResult(command[0],result,m_wake_read_only ? command_health::Phase::Wake : !command_health::media_ready.load() ? command_health::Phase::Startup : command_health::Phase::Live);
         R_TRY(result);
         R_UNLESS(transferred==0,usb::ResultTransactionError());
         m_unsynchronized_writes=false;
@@ -1063,7 +1066,7 @@ namespace ams::usb::mass_storage {
             io_diagnostics::keep_alive_slow_successes.fetch_add(1, std::memory_order_relaxed);
         }
         completion_timer.Finish(result.GetValue());
-        RecordCommandResult(command[0], result);
+        RecordCommandResult(command[0], result, m_wake_read_only ? command_health::Phase::Wake : !command_health::media_ready.load() ? command_health::Phase::Startup : command_health::Phase::Live);
         if (R_FAILED(result)) m_keep_alive_failed = true;
         /* No reset or uncertain-command replay here. Only a completed NOT
          * READY command can be retried; all other failures quarantine media. */
@@ -1167,7 +1170,7 @@ namespace ams::usb::mass_storage {
         R_THROW(usb::ResultInternalStateError());
         }();
         completion_timer.Finish(command_result.GetValue());
-        RecordCommandResult(command[0], command_result);
+        RecordCommandResult(command[0], command_result, m_wake_read_only ? command_health::Phase::Wake : !command_health::media_ready.load() ? command_health::Phase::Startup : command_health::Phase::Live);
         pause_timer.Finish(command_result);
         R_RETURN(command_result);
     }

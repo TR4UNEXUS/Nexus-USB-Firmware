@@ -30,6 +30,7 @@ namespace completion_diagnostics {struct CommandScope{template<class...T>Command
 namespace io_diagnostics {inline std::atomic<u64> last_command_ns{};}
 namespace runtime_diagnostics {inline std::atomic<u64> ready_recovered{},ready_retries{};inline std::atomic<u32> last_sense_action{};}
 namespace sleep_diagnostics {inline std::atomic<u64> reset_attentions{},ready_retries{};}
+namespace command_health {enum class Phase {Startup,Live,Wake};inline std::atomic<bool> media_ready{true};}
 }}
 #define R_SUCCEEDED(r) ((r).GetValue()==0)
 #define R_FAILED(r) (!R_SUCCEEDED(r))
@@ -91,7 +92,7 @@ struct Device {
     u32 reset_result{},last_result{};std::vector<u64> deadlines;std::vector<u8> commands;std::vector<std::vector<u8>> cdbs;
     void Quarantine(){m_keep_alive_failed=true;++quarantines;}
     Result ResetTransport(){++resets;return Result(reset_result);}
-    void RecordCommandResult(u8,Result r){++records;last_result=r.value;}
+    void RecordCommandResult(u8,Result r,command_health::Phase){++records;last_result=r.value;}
     Result NativeReply(const u8*command,std::size_t command_size,DataDirection direction,void*data,u32 bytes,u32*out,u64 deadline){
         CHECK(cursor<script.size());auto s=script[cursor++];CHECK(s.opcode==command[0]);commands.push_back(command[0]);deadlines.push_back(deadline);
         cdbs.emplace_back(command,command+command_size);

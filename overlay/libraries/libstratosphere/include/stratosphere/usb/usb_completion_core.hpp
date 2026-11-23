@@ -108,7 +108,7 @@ namespace ams::usb::completion_diagnostics {
                     write_bytes = Add(write_bytes, event.bytes);
                     if (end > last_write_end) last_write_end = end;
                 }
-                if (event.duration_ns >= NEXUS_USB_COMPLETION_SLOW_NS ||
+                if (event.result != 0 || event.duration_ns >= NEXUS_USB_COMPLETION_SLOW_NS ||
                     ((event.flags & NEXUS_USB_COMPLETION_IDLE_VALID) && event.idle_ns >= NEXUS_USB_COMPLETION_IDLE_NS) ||
                     event.source == NEXUS_USB_COMPLETION_SOURCE_KEEP_ALIVE) {
                     event.sequence = sequence; event.reserved = 0;

@@ -27,6 +27,11 @@ struct Header {
 static_assert(sizeof(Header) == 176);
 constinit os::SdkMutex mutex;
 u32 last_result{};
+UsbRoutingBackupDiagnostic diagnostic{0x3344584e, 1, 0, 0, 0xffffffff, 0, 0, 0, 0};
+void Step(u32 stage, u32 index=0xffffffff, u64 expected=0, u64 actual=0) {
+    diagnostic.stage=stage; diagnostic.index=index;
+    diagnostic.expected=expected; diagnostic.actual=actual;
+}
 std::atomic<u64> requested{1}; // First boot imports the existing SD maps.
 
 struct SaveMount {
@@ -153,6 +158,11 @@ Result ReadHeader(unsigned slot, Header *h, bool verify) {
 Result Latest(Header *out, unsigned *slot, bool verify) {
     Header a{}, b{};
     const auto ar = ReadHeader(0, &a, verify), br = ReadHeader(1, &b, verify);
+    // A read or device error is not evidence that an archive is corrupt.
+    // Preserve it and return the original error instead of overwriting it.
+    for (const auto rc : {ar,br})
+        R_UNLESS(R_SUCCEEDED(rc) || fs::ResultPathNotFound::Includes(rc) ||
+                 ncm::ResultInvalidOperation::Includes(rc), rc);
     if (R_FAILED(ar) && R_FAILED(br)) {
         if (fs::ResultPathNotFound::Includes(ar) && fs::ResultPathNotFound::Includes(br))
             R_RETURN(fs::ResultPathNotFound());
@@ -163,6 +173,7 @@ Result Latest(Header *out, unsigned *slot, bool verify) {
     R_SUCCEED();
 }
 Result NoPending() {
+    Step(1);
     for (const auto *path : {Pending, "#ncm-usb-map:/atmosphere/usb-import.pending"}) {
         fs::FileHandle f{};
         const auto r = fs::OpenFile(&f, path, fs::OpenMode_Read);
@@ -179,10 +190,12 @@ Result Snapshot(Header *h) {
     *h = {Magic, 1, sizeof(Header), 7, 1, {}, {}, {}};
     for (unsigned i = 0; i < 3; ++i) {
         fs::FileHandle f{};
+        Step(2,i);
         R_TRY(fs::OpenFile(&f, Paths[i], fs::OpenMode_Read));
         ON_SCOPE_EXIT { fs::CloseFile(f); };
         s64 size{};
         R_TRY(fs::GetFileSize(&size, f));
+        Step(3,i,16,size>=0?u64(size):UINT64_MAX);
         R_UNLESS(size >= 16, ncm::ResultInvalidOperation());
         h->sizes[i] = size;
         u32 fields[4]{};
@@ -190,10 +203,12 @@ Result Snapshot(Header *h) {
         R_TRY(fs::ReadFile(&got, f, 0, fields, sizeof(fields)));
         constexpr u32 magics[]{0x54425355, 0x43425355, 0x44425355};
         const u32 stride = i == 1 ? (fields[1] == 1 ? 40 : 56) : 16;
+        Step(3,i,16+u64(fields[2])*stride,u64(size));
         R_UNLESS(
             got == sizeof(fields) && fields[0] == magics[i] && !fields[3] && (fields[1] == 1 || (i == 1 && fields[1] == 2)) &&
                 fields[2] <= (i == 2 ? usb_limits::Content : usb_limits::Titles) && u64(size) == 16 + u64(fields[2]) * stride,
             ncm::ResultInvalidOperation());
+        Step(4,i,u64(size));
         R_TRY(HashRange(f, 0, size, h->hashes[i]));
     }
     Seal(*h);
@@ -204,9 +219,11 @@ Result Checkpoint() {
     Header next{};
     R_TRY(Snapshot(&next));
     SaveMount mount;
+    Step(5);
     R_TRY(mount.Open(true));
     Header prior{};
     unsigned slot{};
+    Step(6);
     const auto existing = Latest(&prior, &slot, true);
     if (R_SUCCEEDED(existing)) {
         if (!std::memcmp(prior.sizes, next.sizes, sizeof(next.sizes)) &&
@@ -216,10 +233,25 @@ Result Checkpoint() {
         next.sequence = prior.sequence + 1;
         slot ^= 1;
     } else {
-        R_UNLESS(fs::ResultPathNotFound::Includes(existing), existing);
+        if (!fs::ResultPathNotFound::Includes(existing)) {
+            // An interrupted/corrupt archive must not permanently block new
+            // backups. Only validated current maps and our owned save reach
+            // here. Preserve rejected bytes and never swallow a read/I/O error.
+            Header a{},b{};
+            const auto ar=ReadHeader(0,&a,true), br=ReadHeader(1,&b,true);
+            const auto rejected=[](Result r) { return fs::ResultPathNotFound::Includes(r) || ncm::ResultInvalidOperation::Includes(r); };
+            R_UNLESS(rejected(ar) && rejected(br), existing);
+            Step(7);
+            if (!fs::ResultPathNotFound::Includes(ar)) {
+                // Rename is inside the same uncommitted save transaction.
+                // If a retained rejected copy exists, refuse to overwrite it.
+                R_TRY(fs::RenameFile(Archives[0],"#nx-usb-backup:/maps-a.rejected.bin"));
+            }
+        }
         slot = 0;
     }
     Seal(next);
+    Step(8,slot,Total(next));
     const auto removed = fs::DeleteFile(Archives[slot]);
     R_UNLESS(R_SUCCEEDED(removed) || fs::ResultPathNotFound::Includes(removed), removed);
     R_TRY(fs::CreateFile(Archives[slot], Total(next)));
@@ -257,21 +289,37 @@ Result Checkpoint() {
         output_flushed = true;
     }
     Header check{}, current{};
+    Step(9,slot);
     R_TRY(ReadHeader(slot, &check, true));
     R_TRY(Snapshot(&current));
+    Step(10);
     R_UNLESS(!std::memcmp(next.sizes, current.sizes, sizeof(next.sizes)) &&
                  !std::memcmp(next.hashes, current.hashes, sizeof(next.hashes)),
              ncm::ResultInvalidOperation());
+    Step(11);
     R_TRY(fs::CommitSaveData(Mount));
+    Step(12,slot);
     // Closing on every outcome discards uncommitted changes after any failure.
     R_RETURN(ReadHeader(slot, &check, true));
 }
 } // namespace
 Result CheckpointUsbRoutingBackup() {
     std::scoped_lock lock(mutex);
+    ++diagnostic.attempts;
     const auto r = Checkpoint();
     last_result = r.GetValue();
+    diagnostic.result = last_result;
+    if (R_SUCCEEDED(r)) Step(0);
     R_RETURN(r);
+}
+Result QueryUsbRoutingBackupDiagnostic(UsbRoutingBackupDiagnostic *out) {
+    R_UNLESS(out, fs::ResultInvalidArgument());
+    std::scoped_lock lock(mutex); *out=diagnostic; R_SUCCEED();
+}
+void RecordUsbRoutingBackupPreflightFailure(u32 stage, Result result) {
+    std::scoped_lock lock(mutex);
+    ++diagnostic.attempts; Step(stage);
+    diagnostic.result=last_result=result.GetValue();
 }
 Result QueryUsbRoutingBackup(UsbRoutingBackupStatus *out) {
     R_UNLESS(out, fs::ResultInvalidArgument());

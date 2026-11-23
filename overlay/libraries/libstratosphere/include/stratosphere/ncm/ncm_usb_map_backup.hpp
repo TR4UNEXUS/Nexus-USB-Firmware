@@ -8,6 +8,14 @@ struct UsbRoutingBackupStatus {
   u64 sequence, bytes;
 };
 static_assert(sizeof(UsbRoutingBackupStatus) == 32);
+// Optional read-only command 65037. The original status/archive ABI is unchanged.
+struct UsbRoutingBackupDiagnostic {
+  u32 magic, version, stage, result, index, reserved;
+  u64 expected, actual, attempts;
+};
+static_assert(sizeof(UsbRoutingBackupDiagnostic) == 48);
+Result QueryUsbRoutingBackupDiagnostic(UsbRoutingBackupDiagnostic *out);
+void RecordUsbRoutingBackupPreflightFailure(u32 stage, Result result);
 // Private commands 65034 query, 65035 checkpoint, 65036 read. Restore is
 // performed by Manager's existing checked journal/rollback workflow.
 Result QueryUsbRoutingBackup(UsbRoutingBackupStatus *out);

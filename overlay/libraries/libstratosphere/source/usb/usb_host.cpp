@@ -656,6 +656,12 @@ namespace ams::usb::host {
                 if (R_SUCCEEDED(wait_result)) completion_probe::Count(completion_probe::Counter::EventRace);
                 else if (svc::ResultTimedOut::Includes(wait_result) && impl::UsbNowNs() < completion_deadline) no_event_probe = true;
             }
+            // RF1: a lost notification is not proof that the transfer failed.
+            // On timeout retrieve the already-submitted transfer's report once
+            // before aborting. Never re-submit a read or write, or renew its
+            // deadline. Empty, malformed and failed reports remain failures.
+            const bool deadline_probe = svc::ResultTimedOut::Includes(wait_result) && !no_event_probe;
+            if (deadline_probe) no_event_probe = true;
             if (R_FAILED(wait_result) && !no_event_probe) {
                 observe(wait_result, 2);
                 this->Abort();
@@ -683,6 +689,12 @@ namespace ams::usb::host {
                 R_RETURN(report_result);
             }
             if (count == 0) {
+                if (deadline_probe) {
+                    completion_probe::Count(completion_probe::Counter::Empty);
+                    observe(wait_result, 2);
+                    this->Abort();
+                    R_RETURN(wait_result);
+                }
                 if (no_event_probe) {
                     completion_probe::Count(completion_probe::Counter::Empty);
                     continue; // Pending, not a stale event. Never re-submit.
@@ -712,7 +724,8 @@ namespace ams::usb::host {
             // length. Preserve its Result; never expose failed-report bytes.
             if (R_FAILED(static_cast<Result>(report.res))) R_RETURN(observe(report.res, 5, report.transferredSize));
             *out_transferred_size = report.transferredSize;
-            R_RETURN(observe(report.res, 5, report.transferredSize));
+            // Phase 6 identifies a matching completion recovered at timeout.
+            R_RETURN(observe(report.res, deadline_probe ? 6 : 5, report.transferredSize));
             }
         #else
             AMS_ABORT("TODO");

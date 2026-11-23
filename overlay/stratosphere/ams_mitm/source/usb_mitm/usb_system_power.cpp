@@ -38,6 +38,8 @@ std::atomic<u64> g_requests{}, g_queries{}, g_acks{}, g_failures{}, g_background
 std::atomic<u64> g_registration_attempts{}, g_background_drain_ns{};
 std::atomic<u64> g_deferred_acks{};
 std::atomic<u32> g_transition_result{};
+std::atomic<u64> g_failed_restarts{};
+std::atomic<u32> g_failed_restart_result{};
 
 u64 Now() { return os::GetSystemTick().ToTimeSpan().GetNanoSeconds(); }
 
@@ -130,6 +132,19 @@ struct Backend {
         // release the diagnostic path; normal crypto caching can resume here.
         if (g_failure_result.load(std::memory_order_acquire)) RestoreHardwareKeyCache();
         g_background.Open();
+    }
+    u32 RestartFailedStorage() {
+        if (!g_registered.load() || g_last_state.load() != 0 ||
+            !IsBackgroundQuiescent() || !IsStorageQuiescent()) return BusyResult();
+        RestoreHardwareKeyCache();
+        const auto result = GetUsbContentStorageService()->RestartAfterFailedSystemPower();
+        g_failed_restart_result.store(result.GetValue());
+        if (R_SUCCEEDED(result)) {
+            g_failure_result.store(0, std::memory_order_release);
+            g_failed_restarts.fetch_add(1);
+        }
+        g_report_revision.fetch_add(1, std::memory_order_release);
+        return result.GetValue();
     }
     void FailStorage(u32 result) {
         g_failure_result.store(result);
@@ -279,7 +294,8 @@ int Format(char *out, size_t capacity) {
         "usb_sleep_rebind_queries=%u\nusb_sleep_rebind_query_result=0x%08X\n"
         "usb_sleep_rebind_visible_max=%u\nusb_sleep_rebind_exact_max=%u\n"
         "usb_sleep_prepare_state=%u\nusb_sleep_prepare_stage=%u\n"
-        "usb_sleep_checkpoint_result=0x%08X\nusb_sleep_checkpoint_used=%u\n",
+        "usb_sleep_checkpoint_result=0x%08X\nusb_sleep_checkpoint_used=%u\n"
+        "usb_sleep_failed_restarts=%llu\nusb_sleep_failed_restart_result=0x%08X\n",
         ModuleId, g_crypto_refreshes.load(), g_registered.load(), g_init_result.load(),
         static_cast<unsigned long long>(g_registration_attempts.load()), g_phase.load(),
         g_last_state.load(), g_last_flags.load(), static_cast<unsigned long long>(g_requests.load()),
@@ -305,7 +321,8 @@ int Format(char *out, size_t capacity) {
         static_cast<u32>(sd::rebind_result.load()), static_cast<u32>(sd::rebind_candidates.load()),
         sd::rebind_queries.load(), sd::rebind_query_result.load(),
         sd::rebind_visible_max.load(), sd::rebind_exact_max.load(), g_prepare_state.load(),
-        sd::prepare_stage.load(), sd::checkpoint_result.load(), sd::checkpoint_used.load());
+        sd::prepare_stage.load(), sd::checkpoint_result.load(), sd::checkpoint_used.load(),
+        static_cast<unsigned long long>(g_failed_restarts.load()), g_failed_restart_result.load());
     if (power_size <= 0 || static_cast<size_t>(power_size) >= capacity) return -1;
     const size_t remaining = capacity - static_cast<size_t>(power_size);
     const int game_size = game_wake::Format(out + power_size, remaining);

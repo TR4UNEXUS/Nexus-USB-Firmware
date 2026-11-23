@@ -16,6 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/usb/usb_command_health.hpp>
 #include "../../../../libraries/libstratosphere/source/ncm/ncm_usb_limits.hpp"
 #include "../../../../libraries/libstratosphere/source/fssystem/fssystem_patch_witness.hpp"
 #include <stratosphere/usb/usb_runtime_diagnostics.hpp>
@@ -98,7 +99,7 @@ namespace ams::mitm::usb_storage {
         constexpr const char *UltrahandNotificationDirectory = "/config/ultrahand/notifications";
         /* R83 also accepts NS patch status from a late generic Loader request
          * when the failing title aborts before its mapped resolver executes. */
-    constexpr const char *BuildId = "NEXUS-1.12.2-HS3R1-independent-loader";
+    constexpr const char *BuildId = "NEXUS-1.12.2-RF3-independent-loader";
         int FormatUsbMetadataOptimizationStatus(char *out, size_t capacity) {
             return util::SNPrintf(out, capacity,
                 "io_metadata_cache=SD9\nio_metadata_cache_slots=64\n"
@@ -471,6 +472,7 @@ namespace ams::mitm::usb_storage {
         os::SdkMutex g_loader_trace_mutex{};
         char g_loader_trace_buffer[LoaderTraceBufferSize]{};
         LoaderTraceRecord g_ns_pre_pgl_patch_diagnostic_record{};
+        LoaderTraceRecord g_first_nonzero_trace{};
         bool g_ns_pre_pgl_patch_diagnostic_valid{};
         std::atomic<u64> g_active_usb_launch_program_id{};
         std::atomic<u64> g_active_launch_trace_program_id{};
@@ -2433,6 +2435,12 @@ namespace ams::mitm::usb_storage {
                 static_cast<unsigned long long>(g_loader_trace_next_sequence));
             R_UNLESS(header_written > 0 && static_cast<size_t>(header_written) < sizeof(g_loader_trace_buffer), usb::ResultInvalidParameter());
             written = static_cast<size_t>(header_written);
+            const auto first_written=util::SNPrintf(g_loader_trace_buffer+written,sizeof(g_loader_trace_buffer)-written,
+                "first_nonzero_event=%llu\nfirst_nonzero_stage=%u\nfirst_nonzero_result=0x%08X\nfirst_nonzero_program=%016llX\n",
+                static_cast<unsigned long long>(g_first_nonzero_trace.sequence),g_first_nonzero_trace.info.stage,
+                g_first_nonzero_trace.info.result,static_cast<unsigned long long>(g_first_nonzero_trace.info.program_id));
+            R_UNLESS(first_written>0 && static_cast<size_t>(first_written)<sizeof(g_loader_trace_buffer)-written,usb::ResultInvalidParameter());
+            written+=static_cast<size_t>(first_written);
 
             const auto vsd_written=util::SNPrintf(g_loader_trace_buffer+written,sizeof(g_loader_trace_buffer)-written,
                 "vsd_cleanup=C26\nvsd_snapshot_valid=%u\nvsd_reaper_running=%u\nvsd_init_result=0x%08X\n"
@@ -2733,6 +2741,12 @@ namespace ams::mitm::usb_storage {
                 capture_valid ? snapshot.dropped : 0u);
             R_UNLESS(header_written > 0 && static_cast<size_t>(header_written) < sizeof(g_ncm_launch_trace_buffer), usb::ResultInvalidParameter());
             size_t written = static_cast<size_t>(header_written);
+            const auto first_written=util::SNPrintf(g_loader_trace_buffer+written,sizeof(g_loader_trace_buffer)-written,
+                "first_nonzero_event=%llu\nfirst_nonzero_stage=%u\nfirst_nonzero_result=0x%08X\nfirst_nonzero_program=%016llX\n",
+                static_cast<unsigned long long>(g_first_nonzero_trace.sequence),g_first_nonzero_trace.info.stage,
+                g_first_nonzero_trace.info.result,static_cast<unsigned long long>(g_first_nonzero_trace.info.program_id));
+            R_UNLESS(first_written>0 && static_cast<size_t>(first_written)<sizeof(g_loader_trace_buffer)-written,usb::ResultInvalidParameter());
+            written+=static_cast<size_t>(first_written);
 
             for (u32 i = 0; i < record_count; ++i) {
                 const auto &record = snapshot.records[i];
@@ -3260,6 +3274,15 @@ namespace ams::mitm::usb_storage {
                 "usb_keep_alive_slow_successes=%llu\n"
                 "usb_last_command_ns=%llu\n"
                 "usb_transport_failures=%llu\n"
+                "usb_command_health_schema=1\n"
+                "usb_startup_tur_rejections=%llu\n"
+                "usb_startup_other_failures=%llu\n"
+                "usb_wake_command_failures=%llu\n"
+                "usb_live_read_failures=%llu\n"
+                "usb_live_write_failures=%llu\n"
+                "usb_live_control_failures=%llu\n"
+                "usb_first_live_command=0x%016llX\n"
+                "usb_first_live_failure_ns=%llu\n"
                 "usb_last_failed_opcode=0x%02X\n"
                 "usb_last_failed_result=0x%08X\n"
                 "usb_last_failure_ns=%llu\n"
@@ -3465,6 +3488,14 @@ namespace ams::mitm::usb_storage {
                 static_cast<unsigned long long>(usb::io_diagnostics::keep_alive_slow_successes.load()),
                 static_cast<unsigned long long>(usb::io_diagnostics::last_command_ns.load()),
                 static_cast<unsigned long long>(usb::io_diagnostics::transport_failures.load()),
+                static_cast<unsigned long long>(usb::command_health::startup_ready.load()),
+                static_cast<unsigned long long>(usb::command_health::startup_other.load()),
+                static_cast<unsigned long long>(usb::command_health::wake.load()),
+                static_cast<unsigned long long>(usb::command_health::live_read.load()),
+                static_cast<unsigned long long>(usb::command_health::live_write.load()),
+                static_cast<unsigned long long>(usb::command_health::live_control.load()),
+                static_cast<unsigned long long>(usb::command_health::first_live_command.load(std::memory_order_acquire)),
+                static_cast<unsigned long long>(usb::command_health::first_live_ns.load()),
                 usb::io_diagnostics::last_failed_opcode.load(),
                 usb::io_diagnostics::last_failed_result.load(),
                 static_cast<unsigned long long>(usb::io_diagnostics::last_failure_ns.load()),
@@ -5098,6 +5129,60 @@ namespace ams::mitm::usb_storage {
         R_RETURN(result);
     }
 
+    Result HomebrewService::GetReportSnapshot(const sf::OutBuffer &out) {
+        // Read-only atomic counters and current state; no disk I/O, log files,
+        // device commands or user paths. Sample at report capture, not boot.
+        R_UNLESS(out.GetPointer()!=nullptr && out.GetSize()==8192,usb::ResultInvalidParameter());
+        auto *text=reinterpret_cast<char *>(out.GetPointer());std::memset(text,0,out.GetSize());
+        usb::storage::Status state{};R_TRY(g_storage_service.GetStatus(&state));
+        namespace io=usb::io_diagnostics;namespace health=usb::command_health;
+        const int n=util::SNPrintf(text,out.GetSize(),
+            "usb_live_snapshot_version=1\nusb_live_snapshot_current=1\nbuild_id=%s\n"
+            "usb_live_snapshot_uptime_ns=%llu\nusb_live_snapshot_generation=%llu\n"
+            "usb_live_snapshot_state=%u\nusb_transport_failures=%llu\n"
+            "usb_last_failed_opcode=%u\nusb_last_failed_result=0x%08X\nusb_last_failure_ns=%llu\n"
+            "usb_live_read_failures=%llu\nusb_live_write_failures=%llu\nusb_live_control_failures=%llu\n"
+            "usb_startup_other_failures=%llu\nusb_wake_command_failures=%llu\n",
+            BuildId,static_cast<unsigned long long>(os::GetSystemTick().ToTimeSpan().GetNanoSeconds()),
+            static_cast<unsigned long long>(state.media_generation),static_cast<u32>(state.state),
+            static_cast<unsigned long long>(io::transport_failures.load()),io::last_failed_opcode.load(),io::last_failed_result.load(),
+            static_cast<unsigned long long>(io::last_failure_ns.load()),static_cast<unsigned long long>(health::live_read.load()),
+            static_cast<unsigned long long>(health::live_write.load()),static_cast<unsigned long long>(health::live_control.load()),
+            static_cast<unsigned long long>(health::startup_other.load()),static_cast<unsigned long long>(health::wake.load()));
+        R_UNLESS(n>0&&static_cast<size_t>(n)<out.GetSize(),usb::ResultInvalidParameter());
+        const int added=system_power::Format(text+n,out.GetSize()-n);
+        R_UNLESS(added>=0&&static_cast<size_t>(added)<out.GetSize()-n,usb::ResultInvalidParameter());
+        size_t used=n+added;
+        NexusUsbCompletionSnapshot completion{};
+        const bool captured=usb::completion_diagnostics::Snapshot(&completion,state.media_generation);
+        auto append=[&](const char *name,u64 value) {
+            const int count=util::SNPrintf(text+used,out.GetSize()-used,"%s=%llu\n",name,static_cast<unsigned long long>(value));
+            if(count<=0 || static_cast<size_t>(count)>=out.GetSize()-used)return false;
+            used+=count;return true;
+        };
+        R_UNLESS(append("usb_completion_current",captured),usb::ResultInvalidParameter());
+        if(captured){
+            R_UNLESS(append("usb_completion_commands",completion.command_count) &&
+                append("usb_completion_dropped",completion.dropped) &&
+                append("usb_completion_sampled_ns",completion.sampled_ns),usb::ResultInvalidParameter());
+            // Retain one precise failed command without publishing LBAs,
+            // paths or drive identifiers. Timestamp distinguishes old failures.
+            for(u32 i=completion.event_count;i>0;--i){
+                const auto &event=completion.events[i-1];if(!event.result)continue;
+                R_UNLESS(append("usb_completion_failure_start_ns",event.start_ns) &&
+                    append("usb_completion_failure_opcode",event.opcode) &&
+                    append("usb_completion_failure_result",event.result) &&
+                    append("usb_completion_failure_bytes",event.bytes) &&
+                    append("usb_completion_failure_submit_ns",event.submit_ns) &&
+                    append("usb_completion_failure_wait_ns",event.wait_ns) &&
+                    append("usb_completion_failure_report_ns",event.report_ns) &&
+                    append("usb_completion_failure_max_wait_result",event.max_wait_result),usb::ResultInvalidParameter());
+                break;
+            }
+        }
+        R_SUCCEED();
+    }
+
     Result HomebrewService::OpenPinnedUsbContentFileSystem(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u64 generation) {
         std::unique_ptr<ams::fs::fsa::IFileSystem> pinned;
         R_TRY(CreatePinnedUsbContentFileSystem(&pinned, generation));
@@ -5254,6 +5339,10 @@ namespace ams::mitm::usb_storage {
         auto &record = g_loader_trace_records[(sequence - 1) % MaxLoaderTraceRecords];
         record.sequence = sequence;
         record.info = info;
+        // Independent of the rolling ring. This is evidence, not a diagnosis:
+        // an expected fallback may also return nonzero. UINT32_MAX is unseen.
+        if(!g_first_nonzero_trace.sequence && info.result && info.result!=UINT32_MAX)
+            g_first_nonzero_trace=record;
         if (info.stage == static_cast<u32>(ams::usb::content::LoaderProbeStage::NsPrePglPatchDiagnostic)) {
             g_ns_pre_pgl_patch_diagnostic_record = record;
             g_ns_pre_pgl_patch_diagnostic_valid = true;

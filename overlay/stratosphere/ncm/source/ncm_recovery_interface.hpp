@@ -13,7 +13,8 @@
     AMS_SF_METHOD_INFO(C, H, 65033, Result, GetUsbInstallCapabilities, (const sf::OutBuffer &out), (out)) \
     AMS_SF_METHOD_INFO(C, H, 65034, Result, GetUsbRoutingBackup, (const sf::OutBuffer &out), (out)) \
     AMS_SF_METHOD_INFO(C, H, 65035, Result, SaveUsbRoutingBackup, (), ()) \
-    AMS_SF_METHOD_INFO(C, H, 65036, Result, ReadUsbRoutingArchive, (const sf::OutBuffer &out, u64 sequence, u64 offset), (out, sequence, offset))
+    AMS_SF_METHOD_INFO(C, H, 65036, Result, ReadUsbRoutingArchive, (const sf::OutBuffer &out, u64 sequence, u64 offset), (out, sequence, offset)) \
+    AMS_SF_METHOD_INFO(C, H, 65037, Result, GetUsbBackupDiagnostic, (const sf::OutBuffer &out), (out))
 
 AMS_SF_DEFINE_INTERFACE_WITH_BASE(ams::ncm::recovery, IRecoveryContentManager,
     ::ams::ncm::IContentManager, AMS_NCM_RECOVERY_INTERFACE_INFO, 0xFDB4FFE2);
@@ -26,6 +27,11 @@ namespace ams::ncm::recovery {
             UsbRoutingBackupStatus value{};R_TRY(QueryUsbRoutingBackup(&value));
             std::memcpy(out.GetPointer(),&value,sizeof(value));R_SUCCEED();
         }
+        Result GetUsbBackupDiagnostic(const sf::OutBuffer &out) {
+            R_UNLESS(out.GetSize()==sizeof(UsbRoutingBackupDiagnostic),fs::ResultInvalidArgument());
+            UsbRoutingBackupDiagnostic value{};R_TRY(QueryUsbRoutingBackupDiagnostic(&value));
+            std::memcpy(out.GetPointer(),&value,sizeof(value));R_SUCCEED();
+        }
         Result SaveUsbRoutingBackup() { R_RETURN(CreateUsbRoutingBackup()); }
         Result ReadUsbRoutingArchive(const sf::OutBuffer &out,u64 sequence,u64 offset) {
             R_RETURN(ReadUsbRoutingBackup(out.GetPointer(),out.GetSize(),sequence,offset));
@@ -34,7 +40,7 @@ namespace ams::ncm::recovery {
             // Read-only, no mounts, placeholder writes or registration effects.
             // Bit 1: explicit per-handle USB installs and native-safe metadata
             // ownership. Queryable even while no USB drive is connected.
-            const u32 caps[]{usb_limits::Magic,usb_limits::Abi,usb_limits::Titles,usb_limits::Content,7,0};
+            const u32 caps[]{usb_limits::Magic,usb_limits::Abi,usb_limits::Titles,usb_limits::Content,15,0};
             R_UNLESS(out.GetSize()==sizeof(caps),fs::ResultInvalidArgument());
             std::memcpy(out.GetPointer(),caps,sizeof(caps));R_SUCCEED();
         }

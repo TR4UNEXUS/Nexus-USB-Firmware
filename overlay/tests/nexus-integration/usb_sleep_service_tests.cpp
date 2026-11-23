@@ -59,6 +59,7 @@ void randomGet(void *out,size_t size){static u8 challenge;std::memset(out,++chal
 using namespace ams;using namespace ams::usb;
 #include "actual_io_fault_policy.hpp"
 namespace runtime_diagnostics{std::atomic<u32> disconnect_reason{};}
+namespace command_health{std::atomic<bool> media_ready{};}
 namespace io_diagnostics{std::atomic<u32> reconnect_requests{};}
 namespace host_write{void Invalidate(){}}
 namespace write_transfer{void Invalidate(){}}
@@ -181,7 +182,7 @@ struct FakeClient{
     Result QueryAcquiredInterfaces(host::Interface*out,std::size_t bytes,s32*n){CHECK(bytes==sizeof(host::Interface)*MaxInterfaceCount);++queries;
         *n=absent_before_ready&&queries<=absent_before_ready?0:count;if(*n>0&&*n<=s32(MaxInterfaceCount))out[0]=interface;return Result(result);}
 };
-enum class State{Stopped,Ready,Error};enum class FileSystemType{Unknown,ExFat};
+enum class State{Stopped,Starting,Ready,Error};enum class FileSystemType{Unknown,ExFat};
 struct Status{State state=State::Ready;u64 partition_first_lba=64,media_generation=7,block_count=4096;
     u32 block_size=512;u8 lun{},partition_index{},partition_count=1;s32 interface_id=10;
     u32 last_result{},last_io_result{};bool writable=true;};
@@ -255,6 +256,9 @@ struct Service{
     }
     bool IsSystemPowerQuiescent()const{
 #include "actual_service_IsSystemPowerQuiescent.hpp"
+    }
+    Result RestartAfterFailedSystemPower(){
+#include "actual_service_RestartAfterFailedSystemPower.hpp"
     }
     void FailSystemPower(Result result){
 #include "actual_service_FailSystemPower.hpp"
@@ -603,4 +607,18 @@ static void Reenumeration() {
     }
 }
 
-int main(){NominalAndNoMedia();DrainAndWaiters();Faults();Reenumeration();CleanCheckpointAfterPortLoss();UnusableCheckpoints();std::printf("PASS %u actual storage sleep-service lifecycle and fault checks\n",checks);return 0;}
+static void FailedDiscoveryRestart(){
+    Service s;const auto old=s.generation;s.FailSystemPower(Result(77));
+    CHECK(R_SUCCEEDED(s.RestartAfterFailedSystemPower()));
+    CHECK(s.generation==old+1&&s.reconnects==1&&s.m_device.IsQuarantined()&&!s.m_writable_ready);
+    CHECK(s.m_power_gate.GetPhase()==sleep::Phase::Awake&&R_FAILED(s.CheckMediaGenerationLocked(old)));
+    CHECK(R_FAILED(s.RestartAfterFailedSystemPower()));
+    Service active;CHECK(R_SUCCEEDED(active.BeginSystemOperation()));active.FailSystemPower(Result(77));
+    CHECK(R_FAILED(active.RestartAfterFailedSystemPower())&&!active.generation_changes&&!active.reconnects);
+    active.EndSystemOperation();CHECK(R_SUCCEEDED(active.RestartAfterFailedSystemPower()));
+    Service stopping;stopping.FailSystemPower(Result(77));stopping.m_stop_requested=true;
+    CHECK(R_FAILED(stopping.RestartAfterFailedSystemPower())&&!stopping.generation_changes);
+    Service waking;waking.FailSystemPower(Result(77));waking.m_resume_in_progress=true;
+    CHECK(R_FAILED(waking.RestartAfterFailedSystemPower())&&!waking.generation_changes);
+}
+int main(){FailedDiscoveryRestart();NominalAndNoMedia();DrainAndWaiters();Faults();Reenumeration();CleanCheckpointAfterPortLoss();UnusableCheckpoints();std::printf("PASS %u actual storage sleep-service lifecycle and fault checks\n",checks);return 0;}

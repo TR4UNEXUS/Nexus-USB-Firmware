@@ -1,5 +1,17 @@
 # Changes
 
+## 1.12.2 RF3
+
+- Preserve the successful same-drive sleep/resume path. After a failed wake, restart discovery only after FullAwake acknowledgement and quiescence, revoke old handles, and never replay uncertain writes.
+- Rebuild invalid console routing archives from validated current maps in one checked save transaction. Retain rejected bytes and propagate actual I/O errors.
+- Add optional backup diagnostics, including pending-repair, mount and semantic-map preflight failures; keep the original status/archive ABI.
+- Provide a read-only live USB report snapshot with command submission, completion-wait and report timings. Retain fast failed commands in the bounded recorder too.
+- Retain RF2 Album/hold-R overrides, final USB completion-report recovery, Nextendo-related DNS/mod paths, independent HOC and compressed game-data support.
+- Include Manager 0.2.31 in the three HATS variants. Source is maintained separately.
+
+Host regression checks and cross-builds passed. Physical console and Nextendo online testing remain necessary.
+
+
 ## 1.12.2 HS3R1 — 21 November 2026 (test)
 
 - Moved Nexus USB game-loading hooks to a separate Loader. The stock Loader remains replaceable by unmodified upstream HOC; both packs use the same Nexus core and USB Loader.

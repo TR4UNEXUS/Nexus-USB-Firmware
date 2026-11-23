@@ -15,6 +15,7 @@
  */
 #include <stratosphere.hpp>
 #include "ldr_launch_record.hpp"
+#include "ldr_backend.hpp"
 
 namespace ams::ldr {
 
@@ -74,6 +75,16 @@ namespace ams::pm::info {
 
     Result HasLaunchedBootProgram(bool *out, ncm::ProgramId program_id) {
         *out = ldr::HasLaunchedBootProgram(program_id);
+        if (!*out) {
+            /* Boot modules such as HID belong to the ordinary Loader/HOC.
+             * Query that loader directly: asking PM would re-enter this
+             * loader while PM is waiting for the current launch to finish.
+             * A failed query leaves the override disabled, as before. */
+            bool backend_launched = false;
+            if (R_SUCCEEDED(ldr::backend::HasLaunchedBootProgram(std::addressof(backend_launched), program_id))) {
+                *out = backend_launched;
+            }
+        }
         R_SUCCEED();
     }
 

@@ -49,8 +49,11 @@ public:
         if (m_phase != Phase::Resuming) return;
         std::uint32_t result{};
         if (!backend.TakeWakeResult(result)) return;
-        if (result) Fail(result, backend);
-        else m_phase = Phase::Awake;
+        if (result) {
+            Fail(result, backend);
+            if (backend.IsBackgroundQuiescent() && backend.IsStorageQuiescent() &&
+                !backend.RestartFailedStorage()) { m_failure=0; m_phase=Phase::Awake; }
+        } else m_phase = Phase::Awake;
         // The awake request was already acknowledged before this job started.
         // Failed recovery permits only the existing SD-only diagnostic path.
         backend.OpenBackground();
@@ -66,8 +69,8 @@ public:
         bool start_after_ack = false;
         if (m_phase == Phase::Failed) {
             if (state == 0) {
-                // SD-only failure reporting may restart after a known awake
-                // request. USB remains quarantined and is never retried here.
+                // Fresh discovery may restart after a known awake request.
+                // Old handles remain invalid; failed writes are never replayed.
                 open_after_ack = true;
             } else {
                 backend.CloseBackground();
@@ -118,7 +121,12 @@ public:
         } else if (start_after_ack) {
             backend.StartRecovery();
         } else if (open_after_ack) {
-            if (m_phase != Phase::Failed) m_phase = Phase::Awake;
+            if (m_phase == Phase::Failed) {
+                // A new media generation can be discovered only after a real
+                // awake ACK and quiescence. This never resumes old handles.
+                const auto restart = backend.RestartFailedStorage();
+                if (!restart) { m_failure = 0; m_phase = Phase::Awake; }
+            } else m_phase = Phase::Awake;
             backend.OpenBackground();
         }
         return {result, true};

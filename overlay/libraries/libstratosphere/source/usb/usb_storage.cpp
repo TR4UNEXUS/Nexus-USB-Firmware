@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/usb/usb_command_health.hpp>
 #include <stratosphere/usb/usb_runtime_diagnostics.hpp>
 #include <stratosphere/usb/usb_io_diagnostics.hpp>
 #include <stratosphere/usb/usb_pause_diagnostics.hpp>
@@ -113,6 +114,43 @@ namespace ams::usb::storage {
         // Do not touch active endpoints or cached filesystem objects here.
         // The watcher must not acknowledge until actual quiescence.
         m_power_cv.Broadcast();
+    }
+
+    Result Service::RestartAfterFailedSystemPower() {
+        // Only the PSC watcher calls this after FullAwake was acknowledged.
+        // The failed operation is never replayed. Revoke every old handle
+        // before allowing the owner worker to tear down and discover media.
+        std::scoped_lock volume_lk(m_volume_mutex);
+        {
+            std::scoped_lock state_lk(m_mutex);
+            std::scoped_lock power_lk(m_power_mutex);
+            R_UNLESS(m_running && !m_stop_requested && !m_resume_in_progress &&
+                m_power_gate.GetPhase() == sleep::Phase::Failed && m_power_gate.Active() == 0,
+                usb::ResultResourceBusy());
+        }
+        m_device.Quarantine();
+        m_writable_ready = false;
+        m_filesystem_type = FileSystemType::Unknown;
+        m_checkpoint_valid = false;
+        m_checkpoint_pending = false;
+        m_sleep_marker_armed = false;
+        if (m_game_read_cache) m_game_read_cache->Clear();
+        this->AdvanceMediaGeneration();
+        this->SetState(State::Starting, usb::ResultMediaChanged());
+        this->RequestReconnect();
+        {
+            std::scoped_lock state_lk(m_mutex);
+            std::scoped_lock power_lk(m_power_mutex);
+            // State changes are serialized on the PSC watcher; Stop may still
+            // cancel the reset. Never reopen a stopped or occupied gate.
+            R_UNLESS(m_running && !m_stop_requested && m_power_gate.GetPhase() == sleep::Phase::Failed &&
+                m_power_gate.Active() == 0, usb::ResultResourceBusy());
+            m_power_gate.Stop();
+            R_UNLESS(m_power_gate.Restart(), usb::ResultResourceBusy());
+            sleep_diagnostics::phase.store(static_cast<u32>(m_power_gate.GetPhase()));
+            m_power_cv.Broadcast();
+        }
+        R_SUCCEED();
     }
 
     Result Service::CaptureRetainedInterface(host::Interface *out, u64 deadline) {
@@ -528,6 +566,7 @@ namespace ams::usb::storage {
             R_UNLESS(m_power_gate.CompleteWake(), usb::ResultNotInitialized());
             if (attempted) {
                 m_device.SetWakeReadOnly(false);
+                command_health::media_ready.store(true);
                 m_writable_ready = true;
                 m_status.interface_id = m_device.GetInterfaceId();
                 sleep_diagnostics::rebind_successes.fetch_add(1);
@@ -1793,6 +1832,7 @@ namespace ams::usb::storage {
     void Service::SetReady(const mass_storage::Geometry &geometry, const mass_storage::InquiryData &inquiry, const volume::Partition &partition, FileSystemType filesystem_type, size_t partition_index, size_t partition_count, s32 interface_id, u8 lun, bool writable) {
         std::scoped_lock lk(m_mutex);
         m_status.state = State::Ready;
+        command_health::media_ready.store(true);
         m_status.last_result = ResultSuccess().GetValue();
         m_status.media_generation = m_media_generation;
         m_status.block_count = geometry.block_count;
@@ -1872,6 +1912,7 @@ namespace ams::usb::storage {
     }
 
     void Service::Disconnect() {
+        command_health::media_ready.store(false);
         std::scoped_lock lk(m_volume_mutex);
         m_checkpoint_valid = false;
             if (m_game_read_cache) m_game_read_cache->Clear();
@@ -1926,6 +1967,7 @@ namespace ams::usb::storage {
     Result Service::ReserveSystemWake() { R_SUCCEED(); }
     Result Service::ResumeSystemSleep() { R_SUCCEED(); }
     void Service::FailSystemPower(Result) { }
+    Result Service::RestartAfterFailedSystemPower() { R_THROW(usb::ResultNotInitialized()); }
     bool Service::IsSystemPowerPaused() const { return false; }
     bool Service::IsSystemPowerQuiescent() const { return true; }
 

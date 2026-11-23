@@ -62,7 +62,7 @@ def main():
     storage_bytes = storage_path.read_bytes()
     storage_source = storage_bytes.decode()
     for method in ['BeginSystemOperation', 'EndSystemOperation', 'IsSystemPowerPaused', 'IsSystemPowerQuiescent',
-                   'FailSystemPower', 'CaptureRetainedInterface', 'CaptureSleepWitness', 'TryArmSleepCheckpoint',
+                   'FailSystemPower', 'RestartAfterFailedSystemPower', 'CaptureRetainedInterface', 'CaptureSleepWitness', 'TryArmSleepCheckpoint',
                    'PrepareSystemSleep', 'VerifySleepMarker', 'RebindAfterSleep', 'CreateFileAtGeneration',
                    'ResizeFileAtGeneration', 'DeleteFileAtGeneration', 'RenameFileAtGeneration',
                    'WriteFileAtGeneration', 'CreateDirectoryAtGeneration',
@@ -74,7 +74,7 @@ def main():
     start = storage_source.index('        bool ShouldDisconnectAfterIo(')
     end = storage_source.index('\n        }', start) + len('\n        }')
     (out / 'actual_io_fault_policy.hpp').write_text(storage_source[start:end])
-    start = storage_source.index('                m_checkpoint_valid = false;', storage_source.index('            startup_backoff.Reset();\n            io_diagnostics::probe_cooldown_ms.store(0);'))
+    start = storage_source.index('                m_checkpoint_valid = false;', storage_source.index('            startup_backoff.Reset();', storage_source.index('void Service::WorkerThread()')))
     end = storage_source.index('                this->SetReady(', start)
     (out / 'actual_mount_checkpoint_state.hpp').write_text(storage_source[start:end])
     start = storage_source.index('        std::scoped_lock lk(m_mutex);', storage_source.index('    Result Service::Start()'))

@@ -518,15 +518,20 @@ Result RefreshUsbProgramIdCache(u64 media_generation) {
 
 Result CreateUsbRoutingBackup() {
     std::scoped_lock lk(g_title_map_mutex);
+    u32 stage=13;
+    const auto run=[&]() -> Result {
     ScratchScope scratch_scope;
     R_TRY(CheckNoPendingRepair());
+    stage=14;
     UsbMapWriteLease lease;
     R_TRY(lease.Open(TitleMapMountName));
+    stage=15;
     u32 titles{}, contents{};
     R_UNLESS(ReadTitleMap(g_title_map_scratch, &titles) && ReadTitleContentMap(g_title_content_map_scratch, &contents),
              ncm::ResultInvalidOperation());
     R_TRY(LoadContentLocations());
     R_TRY(g_locations->Load(true));
+    R_UNLESS(titles==contents,ncm::ResultInvalidOperation());
     // A partial multi-file publication must never displace the last valid
     // archive. Validate complete base-title routes before snapshotting.
     for (u32 i = 0; i < titles; ++i) {
@@ -545,7 +550,12 @@ Result CreateUsbRoutingBackup() {
             }
         R_UNLESS(matched, ncm::ResultInvalidOperation());
     }
+    stage=0;
     R_RETURN(CheckpointUsbRoutingBackup());
+    };
+    const auto result=run();
+    if(stage && R_FAILED(result))RecordUsbRoutingBackupPreflightFailure(stage,result);
+    R_RETURN(result);
 }
 
 Result RegisterUsbContentLocation(ContentId content_id) {
@@ -663,6 +673,20 @@ Result RegisterUsbTitle(ProgramId program_id) {
     UsbMapWriteLease lease;
     R_TRY(lease.Open(TitleMapMountName));
 
+    // LR1: only publish a launch route after all of its referenced NCAs have
+    // durable content-location entries. Validate disk rather than stale RAM.
+    R_TRY(LoadContentLocations());
+    R_TRY(g_locations->Load(true));
+    u32 mapping_count{};
+    R_UNLESS(ReadTitleContentMap(g_title_content_map_scratch,&mapping_count),ncm::ResultInvalidOperation());
+    bool mapping_found=false;
+    for(u32 i=0;i<mapping_count;++i)if(g_title_content_map_scratch[i].program_id==program_id.value){
+        const auto &m=g_title_content_map_scratch[i];
+        for(const auto &id:{m.meta_content_id,m.control_content_id,m.program_content_id})
+            R_UNLESS(id!=InvalidContentId && g_locations->Has(id),ncm::ResultContentNotFound());
+        mapping_found=true;break;
+    }
+    R_UNLESS(mapping_found,ncm::ResultContentNotFound());
     auto &entries = g_title_map_scratch;
     u32 count = 0;
     R_UNLESS(ReadTitleMap(entries, std::addressof(count), true), ncm::ResultInvalidOperation());
@@ -692,6 +716,10 @@ Result RegisterUsbTitleContent(ProgramId program_id, const ContentId &meta_conte
     ScratchScope scratch_scope;
     R_TRY(CheckNoPendingRepair());
 
+    R_TRY(LoadContentLocations());
+    R_TRY(g_locations->Load(true));
+    for(const auto &id:{meta_content_id,control_content_id,program_content_id})
+        R_UNLESS(g_locations->Has(id),ncm::ResultContentNotFound());
     auto &entries = g_title_content_map_scratch;
     u32 count = 0;
     R_UNLESS(ReadTitleContentMap(entries, std::addressof(count), true), ncm::ResultInvalidOperation());

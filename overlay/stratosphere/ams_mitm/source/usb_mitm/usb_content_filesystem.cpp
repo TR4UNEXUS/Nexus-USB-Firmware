@@ -875,7 +875,7 @@ namespace ams::mitm::usb_storage {
     Result CreatePinnedUsbContentFileSystem(std::unique_ptr<fs::fsa::IFileSystem> *out, u64 generation) {
         u64 current = 0;
         R_UNLESS(generation != 0 && IsUsbContentFileSystemRouteReady(&current, true) && current == generation,
-            fs::ResultSdCardNotPresent());
+            usb::ResultMediaChanged());
         // No native SD object is opened or retained by this USB-only handle.
         auto file_system = std::make_unique<UsbContentOverlayFileSystem>(
             GetUsbContentStorageService(), nullptr, generation);

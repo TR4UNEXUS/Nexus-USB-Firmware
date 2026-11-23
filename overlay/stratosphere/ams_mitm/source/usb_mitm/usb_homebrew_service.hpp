@@ -69,6 +69,7 @@ namespace ams::mitm::usb_storage {
     AMS_SF_METHOD_INFO(C, H, NEXUS_VSD_BEGIN_LOAD, Result, BeginVirtualSdLoad, (sf::Out<NexusVsdStatus> out, const sf::ClientProcessId &pid, sf::CopyHandle &&process, const sf::InBuffer &path), (out, pid, std::move(process), path)) \
     AMS_SF_METHOD_INFO(C, H, NEXUS_VSD_CANCEL, Result, CancelVirtualSd, (const sf::ClientProcessId &pid), (pid)) \
     AMS_SF_METHOD_INFO(C, H, ams::usb::content::CommandId_OpenNativeSdContentFileSystem, Result, OpenNativeSdContentFileSystem, (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out), (out)) \
+    AMS_SF_METHOD_INFO(C, H, 65040, Result, GetReportSnapshot, (const sf::OutBuffer &out), (out)) \
     AMS_SF_METHOD_INFO(C, H, ams::usb::content::CommandId_GetLegacyStatus, Result, GetStatus,      (sf::Out<ams::mitm::usb_storage::HomebrewServiceStatus> out),                                           (out)) \
     AMS_SF_METHOD_INFO(C, H, ams::usb::content::CommandId_GetNroInfo, Result, GetNroInfo,     (sf::Out<ams::usb::homebrew::NroInfo> out, const sf::InBuffer &path),                                    (out, path)) \
     AMS_SF_METHOD_INFO(C, H, ams::usb::content::CommandId_ReadNro, Result, ReadNro,        (sf::Out<u64> out_read, const sf::OutBuffer &out, const sf::InBuffer &path, u64 offset, u64 media_generation), (out_read, out, path, offset, media_generation)) \
@@ -119,6 +120,7 @@ namespace ams::mitm::usb_storage {
             Result QueryUsbPauses(const sf::OutBuffer &out);
             Result QueryUsbCompletion(const sf::OutBuffer &out);
             Result ControlKeepAlive(sf::Out<NexusUsbKeepAliveStatus> out, const sf::ClientProcessId &pid, NexusUsbKeepAliveRequest request);
+            Result GetReportSnapshot(const sf::OutBuffer &out);
             Result SubmitStartupTiming(sf::Out<u64> out,const sf::ClientProcessId &pid,const sf::InBuffer &in);
             Result QueryStartupTiming(const sf::OutBuffer &out,u32 index);
             Result QueryStartupIoTiming(const sf::OutBuffer &out,u32 index);

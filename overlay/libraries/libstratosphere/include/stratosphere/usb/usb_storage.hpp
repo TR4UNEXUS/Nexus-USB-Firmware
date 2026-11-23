@@ -161,6 +161,7 @@ namespace ams::usb::storage {
             Result ReserveSystemWake();
             Result ResumeSystemSleep();
             void FailSystemPower(Result result);
+            Result RestartAfterFailedSystemPower();
             bool IsSystemPowerPaused() const;
             bool IsSystemPowerQuiescent() const;
             Result GetStatus(Status *out) const;
