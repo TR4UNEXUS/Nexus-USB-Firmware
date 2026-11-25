@@ -42,6 +42,8 @@ For downloads, visit [Nexus USB HATS releases](https://github.com/TR4UNEXUS/Nexu
 
 If Nexus has been useful to you, consider [buying me a coffee](https://www.buymeacoffee.com/TechRepairs4u). Your support gives me more time to build new features and test fixes. Thanks for supporting my work!
 
+<a href="https://www.buymeacoffee.com/TechRepairs4u"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" width="217" height="60"></a>
+
 ## Licence
 
 This code builds on Atmosphère. Original copyright notices and third-party licences are retained; see [LICENSE](LICENSE) and the notices alongside each component. The overlay's UI libraries keep their own licences. Private keys, console data and generated builds are not included.
