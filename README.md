@@ -38,6 +38,10 @@ The firmware cross-build and host checks passed. RF3 still needs console validat
 
 For downloads, visit [Nexus USB HATS releases](https://github.com/TR4UNEXUS/Nexus-USB-HATS/releases). [Nexus Manager source](https://github.com/TR4UNEXUS/Nexus-Manager-Source) is maintained separately; these packs include Manager 0.2.31.
 
+## Support Nexus
+
+If Nexus has been useful to you, consider [buying me a coffee](https://www.buymeacoffee.com/TechRepairs4u). Your support gives me more time to build new features and test fixes. Thanks for supporting my work!
+
 ## Licence
 
 This code builds on Atmosphère. Original copyright notices and third-party licences are retained; see [LICENSE](LICENSE) and the notices alongside each component. The overlay's UI libraries keep their own licences. Private keys, console data and generated builds are not included.
