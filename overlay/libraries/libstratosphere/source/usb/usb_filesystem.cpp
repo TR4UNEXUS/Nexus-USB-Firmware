@@ -16,7 +16,7 @@
 #include <stratosphere.hpp>
 #include <stratosphere/fs/fs_read_only_filesystem.hpp>
 #include <stratosphere/fs/impl/fs_newable.hpp>
-#include <stratosphere/usb/usb_filesystem.hpp>
+#include <stratosphere/usb/usb_cached_control_filesystem.hpp>
 
 namespace ams::usb::filesystem {
 
@@ -30,16 +30,23 @@ namespace ams::usb::filesystem {
                 storage::EjectLease m_eject_lease;
                 Service *m_service;
                 u64 m_media_generation;
+                ReadLease m_lease_mode;
+                eject::Origin m_reader;
                 char m_path[fs::EntryNameLengthMax + 1]{};
 
             public:
-                Result AcquireLease() { R_RETURN(m_service->AcquireEjectLease(&m_eject_lease,m_media_generation)); }
-                ReadOnlyFile(Service *service, const fs::Path &path, u64 media_generation) : m_service(service), m_media_generation(media_generation) {
+                Result AcquireLease() {
+                    R_SUCCEED_IF(m_lease_mode == ReadLease::CachedControl);
+                    R_RETURN(m_service->AcquireEjectLease(&m_eject_lease, m_media_generation, m_reader));
+                }
+                ReadOnlyFile(Service *service, const fs::Path &path, u64 media_generation, ReadLease lease, eject::Origin reader)
+                    : m_service(service), m_media_generation(media_generation), m_lease_mode(lease), m_reader(reader) {
                     AMS_ASSERT(m_service != nullptr);
                     const size_t length = path.GetLength();
                     AMS_ASSERT(length <= fs::EntryNameLengthMax);
                     std::memcpy(m_path, path.GetString(), length);
                     m_path[length] = '\0';
+                    m_reader.path = m_path;
                 }
 
             private:
@@ -51,6 +58,12 @@ namespace ams::usb::filesystem {
                 }
 
                 virtual Result DoRead(size_t *out, s64 offset, void *buffer, size_t size, const fs::ReadOption &) override final {
+                    // HOME can cache a Control archive long after it reads the icon.
+                    // Pin the whole read, including its size lookup, to the original drive.
+                    storage::EjectLease operation;
+                    if (m_lease_mode == ReadLease::CachedControl) {
+                        R_TRY(m_service->AcquireEjectLease(&operation, m_media_generation, m_reader));
+                    }
                     R_TRY(this->CheckMediaGeneration());
                     R_UNLESS(offset >= 0, fs::ResultOutOfRange());
                     volume::FileInfo info{};
@@ -124,7 +137,7 @@ namespace ams::usb::filesystem {
                 char m_path[fs::EntryNameLengthMax + 1]{};
 
             public:
-                Result AcquireLease() { R_RETURN(m_service->AcquireEjectLease(&m_eject_lease,m_media_generation)); }
+                Result AcquireLease() { R_RETURN(m_service->AcquireEjectLease(&m_eject_lease, m_media_generation, {"read_only_directory", m_path})); }
                 ReadOnlyDirectory(Service *service, const fs::Path &path, fs::OpenDirectoryMode mode, u64 media_generation) : m_service(service), m_mode(mode), m_media_generation(media_generation) {
                     AMS_ASSERT(m_service != nullptr);
                     const size_t length = path.GetLength();
@@ -187,9 +200,11 @@ namespace ams::usb::filesystem {
 
             private:
                 Service *m_service;
+                ReadLease m_lease_mode;
+                eject::Origin m_reader;
 
             public:
-                explicit ReadOnlyFileSystem(Service *service) : m_service(service) {
+                ReadOnlyFileSystem(Service *service, ReadLease lease, eject::Origin reader) : m_service(service), m_lease_mode(lease), m_reader(reader) {
                     AMS_ASSERT(m_service != nullptr);
                 }
 
@@ -226,7 +241,7 @@ namespace ams::usb::filesystem {
                     R_TRY(m_service->GetFileInfoAtGeneration(path.GetString(), std::addressof(info), media_generation));
                     R_UNLESS(!info.directory, fs::ResultPathNotFound());
 
-                    auto file = std::make_unique<ReadOnlyFile>(m_service, path, media_generation);
+                    auto file = std::make_unique<ReadOnlyFile>(m_service, path, media_generation, m_lease_mode, m_reader);
                     R_UNLESS(file != nullptr, fs::ResultAllocationMemoryFailedMakeUnique());
                     R_TRY(file->AcquireLease());
                     *out_file = std::move(file);
@@ -275,10 +290,10 @@ namespace ams::usb::filesystem {
 
     }
 
-    Result Service::AcquireEjectLease(storage::EjectLease *lease,u64 generation) {
+    Result Service::AcquireEjectLease(storage::EjectLease *lease, u64 generation, eject::Origin origin) {
         std::scoped_lock lk(m_mutex);
         R_UNLESS(m_mounted && m_storage && lease,usb::ResultNotInitialized());
-        R_RETURN(lease->Acquire(m_storage,generation));
+        R_RETURN(lease->Acquire(m_storage, generation, origin));
     }
 
     Service::~Service() {
@@ -393,9 +408,13 @@ namespace ams::usb::filesystem {
     }
 
     Result CreateReadOnlyFileSystem(std::unique_ptr<fs::fsa::IFileSystem> *out, Service *service) {
+        R_RETURN(CreateReadOnlyFileSystem(out, service, ReadLease::OpenFile));
+    }
+
+    Result CreateReadOnlyFileSystem(std::unique_ptr<fs::fsa::IFileSystem> *out, Service *service, ReadLease lease, eject::Origin reader) {
         R_UNLESS(out != nullptr && service != nullptr, usb::ResultInvalidParameter());
         R_UNLESS(service->IsMounted(), usb::ResultNotInitialized());
-        auto fs = std::make_unique<ReadOnlyFileSystem>(service);
+        auto fs = std::make_unique<ReadOnlyFileSystem>(service, lease, reader);
         R_UNLESS(fs != nullptr, fs::ResultAllocationMemoryFailedMakeUnique());
         *out = std::move(fs);
         R_SUCCEED();

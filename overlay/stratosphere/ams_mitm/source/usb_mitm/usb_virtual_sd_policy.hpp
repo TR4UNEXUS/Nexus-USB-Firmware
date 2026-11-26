@@ -67,11 +67,14 @@ struct Session {
         if(!gen || phase!=Phase::Idle || !Parse(path,candidate))return false;
         profile=candidate;generation=gen;armed_at=now;phase=Phase::Armed;++serial;return true;
     }
+    bool ArmExpired(std::uint64_t now) const {
+        return phase == Phase::Armed && now >= armed_at && now - armed_at > 30000;
+    }
     // Only a matching, timely loader handoff activates the view. Every other
     // load (including hbmenu/chainload) revokes it before another NRO is opened.
     bool Begin(std::string_view path,std::uint64_t now) {
         if(path.starts_with("sdmc:"))path.remove_prefix(5);
-        if(phase==Phase::Armed && now>=armed_at && now-armed_at<=30000 && path==profile.logical) {
+        if(phase==Phase::Armed && now>=armed_at && !ArmExpired(now) && path==profile.logical) {
             phase=Phase::Active;return true;
         }
         Clear();return false;

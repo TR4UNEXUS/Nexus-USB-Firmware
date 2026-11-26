@@ -1124,29 +1124,56 @@ namespace ams::usb::storage {
         return m_running;
     }
 
-    Result Service::AcquireEjectLease(u64 generation) {
+    Result Service::AcquireEjectLease(u64 generation, eject::OwnerLink &link, eject::Origin origin) {
         std::scoped_lock lk(m_mutex);
         R_UNLESS(!m_stop_requested && !m_reconnect_requested && m_status.state==State::Ready,
                  usb::ResultNotInitialized());
         R_UNLESS(m_eject.Acquire(generation),usb::ResultResourceBusy());
+        m_eject_owners.Add(link, origin, generation, os::GetSystemTick().ToTimeSpan().GetMilliSeconds());
         R_SUCCEED();
     }
-    void Service::ReleaseEjectLease(u64 generation) {
-        std::scoped_lock lk(m_mutex); m_eject.Release(generation);
+    void Service::ReleaseEjectLease(u64 generation, eject::OwnerLink &link) {
+        std::scoped_lock lk(m_mutex);
+        m_eject_owners.Remove(link);
+        m_eject.Release(generation);
+    }
+    void Service::SnapshotEjectOwners(eject::Attempt &attempt) const {
+        std::scoped_lock lk(m_mutex);
+        m_eject_owners.Snapshot(attempt, m_eject.Get());
     }
     eject::Status Service::GetEjectStatus() const {
         std::scoped_lock lk(m_mutex); return m_eject.Get();
     }
-    Result Service::RequestEject(u64 request,u64 generation) {
-        R_TRY(BeginSystemOperation());
+    Result Service::RequestEject(u64 request, u64 generation, eject::Attempt &attempt) {
+        const Result power = BeginSystemOperation();
+        if (R_FAILED(power)) {
+            attempt.check = "power_admission";
+            SnapshotEjectOwners(attempt);
+            R_RETURN(power);
+        }
         ON_SCOPE_EXIT { EndSystemOperation(); };
         // Do not wait behind any I/O or interrupt a transfer to satisfy eject.
         std::unique_lock volume_lock(m_volume_mutex,std::try_to_lock);
-        R_UNLESS(volume_lock.owns_lock(),usb::ResultResourceBusy());
         std::scoped_lock lk(m_mutex);
-        R_UNLESS(m_running && !m_stop_requested && !m_reconnect_requested && m_status.state==State::Ready,
-                 usb::ResultNotInitialized());
-        R_UNLESS(m_eject.Request(request,generation),usb::ResultResourceBusy());
+        m_eject_owners.Snapshot(attempt, m_eject.Get());
+        if (!volume_lock.owns_lock()) {
+            attempt.check = "volume_io_lock_held";
+            R_THROW(usb::ResultResourceBusy());
+        }
+        if (!m_running || m_stop_requested || m_reconnect_requested || m_status.state != State::Ready) {
+            if (!m_running) attempt.check = "storage_stopped";
+            else if (m_stop_requested) attempt.check = "storage_stopping";
+            else if (m_reconnect_requested) attempt.check = "storage_reconnecting";
+            else attempt.check = "storage_not_ready";
+            R_THROW(usb::ResultNotInitialized());
+        }
+        if (!m_eject.Request(request, generation)) {
+            if (!request) attempt.check = "invalid_request_id";
+            else if (m_eject.Blocked()) attempt.check = "eject_already_in_progress_or_finished";
+            else if (attempt.status.handles) attempt.check = "open_usb_handles";
+            else attempt.check = "media_generation_mismatch";
+            R_THROW(usb::ResultResourceBusy());
+        }
         // Gate closes atomically with lease admission. Existing handles refuse
         // the request; new opens and I/O cannot enter after this point.
         m_status.state=State::Mounting;
@@ -2056,10 +2083,11 @@ namespace ams::usb::storage {
     }
 
     void Service::ThreadEntry(void *) { }
-    Result Service::AcquireEjectLease(u64) { R_THROW(usb::ResultOperationDenied()); }
-    void Service::ReleaseEjectLease(u64) { }
+    Result Service::AcquireEjectLease(u64, eject::OwnerLink &, eject::Origin) { R_THROW(usb::ResultOperationDenied()); }
+    void Service::ReleaseEjectLease(u64, eject::OwnerLink &) { }
+    void Service::SnapshotEjectOwners(eject::Attempt &) const { }
     eject::Status Service::GetEjectStatus() const { return {}; }
-    Result Service::RequestEject(u64,u64) { R_THROW(usb::ResultOperationDenied()); }
+    Result Service::RequestEject(u64,u64,eject::Attempt &attempt) { attempt.check = "unsupported_platform"; R_THROW(usb::ResultOperationDenied()); }
     Result Service::ResumeAfterEject() { R_THROW(usb::ResultOperationDenied()); }
     Result Service::ControlKeepAliveTest(NexusUsbKeepAliveStatus *, u64, const NexusUsbKeepAliveRequest &) { R_THROW(usb::ResultOperationDenied()); }
     Result Service::ControlWriteTransferTest(NexusUsbWriteTransferStatus *, u64, const NexusUsbWriteTransferRequest &) { R_THROW(usb::ResultOperationDenied()); }

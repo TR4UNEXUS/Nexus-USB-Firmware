@@ -33,7 +33,8 @@ class File final:public fs::fsa::IFile,public fs::impl::Newable {
     usb::storage::EjectLease m_eject_lease;
     BoundPath m_path;fs::OpenMode m_mode;
 public:
-    Result AcquireLease() {R_RETURN(m_eject_lease.Acquire(m_path.Service(),m_path.lease.generation));}
+    Result AcquireLease() {R_RETURN(m_eject_lease.Acquire(m_path.Service(), m_path.lease.generation,
+        {m_mode & fs::OpenMode_Write ? "virtual_sd_file_writable" : "virtual_sd_file_read", m_path.path, m_path.lease.pid}));}
     File(const BoundPath &path,fs::OpenMode mode):m_path(path),m_mode(mode){}
 private:
     Result DoRead(size_t *out,s64 offset,void *data,size_t size,const fs::ReadOption &option) override {
@@ -78,7 +79,8 @@ class Directory final:public fs::fsa::IDirectory,public fs::impl::Newable {
             (m_mode&fs::OpenDirectoryMode_Directory)!=0,(m_mode&fs::OpenDirectoryMode_File)!=0,count,m_path.lease.generation)));
     }
 public:
-    Result AcquireLease() {R_RETURN(m_eject_lease.Acquire(m_path.Service(),m_path.lease.generation));}
+    Result AcquireLease() {R_RETURN(m_eject_lease.Acquire(m_path.Service(), m_path.lease.generation,
+        {"virtual_sd_directory", m_path.path, m_path.lease.pid}));}
     Directory(const BoundPath &path,fs::OpenDirectoryMode mode):m_path(path),m_mode(mode){}
     sf::cmif::DomainObjectId GetDomainObjectId() const override {AMS_ABORT();}
 private:

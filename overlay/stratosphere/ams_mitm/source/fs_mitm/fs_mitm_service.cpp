@@ -391,7 +391,7 @@ namespace ams::mitm::fs {
             const Result routed = [&]() -> Result {
                 std::shared_ptr<ams::fs::fsa::IFileSystem> base, domain;
                 ncm::ProgramId resolved{};
-                R_TRY(usb_storage::OpenUsbControlFileSystemByPath(&base, &resolved, path.str, program_id));
+                R_TRY(usb_storage::OpenUsbControlFileSystemByPath(&base, &resolved, path.str, program_id, m_client_info.process_id.value));
                 sf::cmif::DomainObjectId id{};
                 R_TRY(WrapUsbControlFileSystemForMitm(&domain, &id, std::move(base), m_forward_service, resolved));
                 auto object = MakeSharedFileSystem(std::move(domain), false, true);
@@ -456,10 +456,10 @@ namespace ams::mitm::fs {
             const Result usb_result = filesystem_route_ready
                 ? usb_storage::OpenUsbControlFileSystemByPath(
                     std::addressof(usb_control_fs), std::addressof(resolved_program_id),
-                    path.str, program_id)
+                    path.str, program_id, m_client_info.process_id.value)
                 : usb_storage::OpenUsbControlFileSystem(
                     std::addressof(usb_control_fs), std::addressof(resolved_program_id),
-                    path.str, program_id);
+                    path.str, program_id, m_client_info.process_id.value);
             usb_storage::RecordLaunchBoundaryTrace(usb::content::LoaderProbeStage::FsControlMountResult, resolved_program_id, static_cast<u8>(ncm::ContentType::Control), usb_result, path.str, static_cast<u8>(ncm::StorageId::None), static_cast<u8>(ncm::StorageId::Host));
             if (R_SUCCEEDED(usb_result)) {
                 std::shared_ptr<ams::fs::fsa::IFileSystem> domain_fs;

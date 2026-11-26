@@ -143,7 +143,7 @@ namespace ams::mitm::usb_storage {
 
         Result DeleteUsbDirectoryContents(usb::storage::Service *service, const char *path, u64 generation) {
             usb::storage::EjectLease operation;
-            R_TRY(operation.Acquire(service,generation));
+            R_TRY(operation.Acquire(service, generation, {"content_directory_delete", path}));
             while (true) {
                 usb::volume::DirectoryEntryInfo entry{};
                 size_t count = 0;
@@ -176,7 +176,10 @@ namespace ams::mitm::usb_storage {
                 char m_path[fs::EntryNameLengthMax + 1]{};
 
             public:
-                Result AcquireLease() { R_RETURN(m_eject_lease.Acquire(m_service,m_media_generation)); }
+                Result AcquireLease() {
+                    R_RETURN(m_eject_lease.Acquire(m_service, m_media_generation,
+                        {m_mode & fs::OpenMode_Write ? "content_file_writable" : "content_file_read", m_path}));
+                }
                 UsbContentFile(usb::storage::Service *service, const fs::Path &path,
                                fs::OpenMode mode, u64 generation)
                     : m_service(service), m_mode(mode), m_media_generation(generation) {
@@ -302,7 +305,13 @@ namespace ams::mitm::usb_storage {
                 }
 
                 Result Initialize(const fs::Path &path) {
-                    R_TRY(m_eject_lease.Acquire(m_service,m_media_generation));
+                    // The merged SD/USB catalogue holds an offset between reads, not an
+                    // open FAT directory. Pin active enumeration, and keep a lifetime
+                    // lease for an explicitly opened USB-only directory.
+                    usb::storage::EjectLease opening;
+                    auto &lease = m_stock_file_system ? opening : m_eject_lease;
+                    R_TRY(lease.Acquire(m_service, m_media_generation,
+                        {m_stock_file_system ? "merged_directory_open" : "usb_content_directory", path.IsEmpty() ? "/" : path.GetString()}));
                     R_TRY(CopyPath(m_path, sizeof(m_path), path));
                     m_root = IsRootPath(path);
 
@@ -387,6 +396,10 @@ namespace ams::mitm::usb_storage {
                                       s64 max_entries) override final {
                     R_UNLESS(max_entries > 0, fs::ResultInvalidArgument());
                     *out_count = 0;
+                    usb::storage::EjectLease operation;
+                    if (m_stock_file_system && m_usb_directory_exists && !m_usb_complete) {
+                        R_TRY(operation.Acquire(m_service, m_media_generation, {"merged_directory_read", m_path}));
+                    }
 
                     if (!m_stock_file_system) {
                         usb::volume::FileInfo info{};
@@ -416,6 +429,10 @@ namespace ams::mitm::usb_storage {
 
                 virtual Result DoGetEntryCount(s64 *out) override final {
                     s64 total = 0;
+                    usb::storage::EjectLease operation;
+                    if (m_stock_file_system && m_usb_directory_exists) {
+                        R_TRY(operation.Acquire(m_service, m_media_generation, {"merged_directory_count", m_path}));
+                    }
                     if (m_usb_directory_exists) {
                         size_t skip = 0;
                         while (true) {

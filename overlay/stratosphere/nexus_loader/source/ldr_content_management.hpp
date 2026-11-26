@@ -133,6 +133,7 @@ namespace ams::ldr {
     void RecordUsbLoaderTraceForDiagnostics(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess());
     Result GetProgramPath(char *out_path, size_t out_size, const ncm::ProgramLocation &loc, const ldr::ProgramAttributes &attrs);
     void ClearUsbExternalCodeVerification(ncm::ProgramId program_id);
+    void ReleaseTemporaryUsbCode(ncm::ProgramId program_id);
     Result BindUsbProcessContent(PinId pin_id, ncm::ProgramId program_id, os::ProcessId process_id);
     void ReleaseUsbProcessContent(PinId pin_id);
     Result RedirectProgramPath(const char *path, size_t size, const ncm::ProgramLocation &loc);

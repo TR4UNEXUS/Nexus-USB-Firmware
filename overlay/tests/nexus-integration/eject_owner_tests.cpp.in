@@ -1,0 +1,245 @@
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <condition_variable>
+#include <iterator>
+#include <utility>
+#include <algorithm>
+#include "usb_eject.hpp"
+#include "usb_eject_owners.hpp"
+#include "usb_eject_protocol.hpp"
+#include "usb_virtual_sd_policy.hpp"
+
+using u8 = uint8_t;
+using s32 = int32_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+namespace usb = ams::usb;
+u64 g_eject_boot = 42;
+u32 g_eject_ack_result{};
+#define MAKERESULT(m,d) ((d)*512+(m))
+#define R_FAILED(value) ((value) != 0)
+template<class F> struct ScopeExit { F action; ~ScopeExit() { action(); } };
+struct AtExit { template<class F> ScopeExit<F> operator+(F f) { return {std::move(f)}; } };
+#define ON_SCOPE_EXIT auto cleanup = AtExit{} + [&]()
+namespace util { using std::size; constexpr auto SNPrintf = std::snprintf; }
+namespace ams::fs { constexpr int OpenMode_Read = 1; }
+namespace ncm::SystemAppletId { constexpr struct {u64 value;} PhotoViewer{0x010000000000100d}; }
+struct Binding { u64 pin_id{}, process_id{}; bool snapshot{}; };
+std::mutex g_process_content_mutex;
+Binding g_process_contents[2]{};
+const int gone = MAKERESULT(15,1);
+int binding_rc = gone, app_rc = gone, album_rc = gone, open_rc{}, module_rc{}, init_rc{};
+bool replace_binding{}, wrong_file{}, short_file{}, empty_id{}, wrong_module{};
+s32 module_count = 1;
+int file_closes{}, service_closes{};
+struct FsFile {};
+struct LoaderModuleInfo { u8 build_id[32]; u64 base_address, size; };
+constexpr int FsReadOption_None = 0;
+int pminfoGetProgramId(u64 *,u64) {
+    std::lock_guard lock(g_process_content_mutex); // checks the query is outside the binding lock
+    if (replace_binding) g_process_contents[0] = {2,202,true};
+    return binding_rc;
+}
+int pmdmntGetApplicationProcessId(u64 *pid) { *pid=303; return app_rc; }
+int pmdmntGetProcessId(u64 *pid,u64 id) { assert(id==ncm::SystemAppletId::PhotoViewer.value); *pid=404; return album_rc; }
+struct FsResult { unsigned value; operator unsigned() const {return value;} unsigned GetValue() const {return value;} };
+namespace mitm::fs { FsResult OpenSdFile(FsFile*,const char* name,int) {
+    assert(std::strcmp(name,"/switch/SwitchU/bin/menu/main")==0); return {static_cast<unsigned>(open_rc)};
+} }
+int fsFileRead(FsFile*,u64,void *data,size_t length,int,u64 *actual) {
+    auto *bytes = static_cast<u8*>(data);
+    std::memcpy(bytes,wrong_file?"junk":"NSO0",4);
+    if (!empty_id) bytes[0x40]=7;
+    *actual=short_file?8:length;
+    return 0;
+}
+void fsFileClose(FsFile*) {++file_closes;}
+int ldrDmntInitialize() {return init_rc;}
+void ldrDmntExit() {++service_closes;}
+int ldrDmntGetProcessModuleInfo(u64 pid,LoaderModuleInfo *modules,size_t capacity,s32 *count) {
+    assert(pid==404 && capacity>=2);
+    *count=module_count; modules[0].build_id[0]=wrong_module?8:7; return module_rc;
+}
+// EJECT_OWNER_METHODS
+namespace cache_test {
+using ams::usb::eject::Gate;
+using Result = int;
+using s64 = int64_t;
+#define R_TRY(x) do { const int rc=(x); if(rc) return rc; } while(0)
+#define R_UNLESS(c,e) do { if(!(c)) return (e); } while(0)
+#define R_SUCCEED_IF(c) do { if(c) return 0; } while(0)
+#define R_RETURN(x) return (x)
+namespace fs { int ResultOutOfRange() { return 1; } }
+namespace volume { struct FileInfo { bool directory{}; u64 size{100}; }; }
+namespace storage {
+struct EjectLease {
+    Gate* gate{}; u64 generation{};
+    ~EjectLease() { if(gate) gate->Release(generation); }
+};
+}
+enum class ReadLease {OpenFile, CachedControl};
+struct Media {
+    Gate gate;
+    int read_error{};
+    Result AcquireEjectLease(storage::EjectLease* lease, u64 generation, usb::eject::Origin) {
+        if(!gate.Acquire(generation)) return 2;
+        lease->gate=&gate; lease->generation=generation; return 0;
+    }
+    Result GetFileInfoAtGeneration(const char*,volume::FileInfo*,u64 generation) {
+        assert(!gate.Request(1,generation)); return 0;
+    }
+    Result ReadFileAtGeneration(const char*,u64,void*,size_t request,size_t *out,u64 generation,bool) {
+        assert(!gate.Request(1,generation)); *out=request; return read_error;
+    }
+};
+struct File {
+    Media* m_service; ReadLease m_lease_mode;
+    storage::EjectLease m_eject_lease{};
+    u64 m_media_generation{4}; const char* m_path{"/icon"};
+    usb::eject::Origin m_reader{"read_only_file", m_path};
+    int CheckMediaGeneration() const { return m_service->gate.Get().generation==m_media_generation?0:1; }
+    int AcquireLease() // OPEN_LEASE_BODY
+    int Read(size_t *out,s64 offset,void* buffer,size_t size) // READ_BODY
+};
+void TestReadLease() {
+    Media media{}; media.gate.NewGeneration(4);
+    File cached{&media,ReadLease::CachedControl};
+    assert(cached.AcquireLease()==0 && !media.gate.Get().handles);
+    size_t out=0;
+    assert(cached.Read(&out,0,nullptr,8)==0 && out==8 && !media.gate.Get().handles);
+    media.read_error=51;
+    assert(cached.Read(&out,0,nullptr,8)==51 && !media.gate.Get().handles);
+    {
+        File program{&media,ReadLease::OpenFile};
+        assert(program.AcquireLease()==0 && !media.gate.Request(1,4));
+    }
+    assert(media.gate.Request(1,4) && cached.Read(&out,0,nullptr,8)!=0);
+    media.gate.Complete(); assert(media.gate.Resume()); media.gate.NewGeneration(5);
+    assert(cached.Read(&out,0,nullptr,8)!=0);
+    nexus_vsd::Session port{};
+    assert(port.Arm("/switch/game/game.nro",5,100));
+    assert(!port.ArmExpired(30100) && port.ArmExpired(30101));
+    assert(!port.Begin("/switch/game/game.nro",30101));
+    assert(port.Arm("/switch/game/game.nro",5,100) && port.Begin("/switch/game/game.nro",30100));
+    assert(!port.ArmExpired(40000));
+    std::puts("PASS idle Control cache, in-flight read, failed read, regular file, remount and USB port arm expiry.");
+}
+}
+namespace storage_test {
+using Result = int;
+namespace usb {
+    namespace eject = ams::usb::eject;
+    int ResultResourceBusy() {return 10;}
+    int ResultNotInitialized() {return 11;}
+}
+namespace eject = usb::eject;
+enum class State {Ready, Mounting};
+#define R_THROW(x) return (x)
+#define R_SUCCEED() return 0
+struct Service {
+    std::mutex m_mutex, m_volume_mutex;
+    bool m_running{true}, m_stop_requested{}, m_reconnect_requested{};
+    struct { State state{State::Ready}; unsigned writable{1}; } m_status;
+    eject::Owners m_eject_owners;
+    eject::Gate m_eject;
+    int power{};
+    int BeginSystemOperation() {return power;}
+    void EndSystemOperation() {}
+    void SnapshotEjectOwners(eject::Attempt &a) {std::lock_guard lk(m_mutex); m_eject_owners.Snapshot(a,m_eject.Get());}
+    Result RequestEject(u64,u64,eject::Attempt &);
+};
+// STORAGE_ADMISSION
+void TestSnapshot() {
+    Service s;
+    s.m_eject.NewGeneration(3);
+    eject::OwnerLink file, dir, stale;
+    auto add = [&](eject::OwnerLink &link, eject::Origin origin, u64 generation) {
+        assert(s.m_eject.Acquire(generation));
+        s.m_eject_owners.Add(link,origin,generation,12);
+    };
+    add(stale, {"old"}, 3);
+    s.m_eject.NewGeneration(4);
+    char path[] = "/registered/a.nca";
+    add(file, {"OpenUsbControlFileSystemByPath",path,100,0x123abc}, 4);
+    path[1] = 'x'; // the caller may destroy its path immediately after acquire
+    add(dir, {"directory","/other\nfile"}, 4);
+    eject::Attempt a{};
+    auto expect = [&](const char *reason,int result) {
+        a = {};
+        assert(s.RequestEject(10,4,a)==result && std::strcmp(a.check,reason)==0);
+    };
+    expect("open_usb_handles",10);
+    assert(a.status.handles==2 && a.shown==2);
+    nexus_eject::Request request{};
+    request.nonce=10; request.generation=4; g_eject_ack_result=10;
+    FormatEjectAttempt(a,request,13);
+    assert(g_eject_report_denied && g_eject_report_size==std::strlen(g_eject_report));
+    for (const char *v: {"decision=refused check=open_usb_handles", "handles=2 shown=2 omitted=0",
+                         "owner=OpenUsbControlFileSystemByPath pid=100 title=0000000000123ABC",
+                         "path=/registered/a.nca", "path=/other?file"}) assert(std::strstr(g_eject_report,v));
+    assert(!std::strstr(g_eject_report,"owner=old"));
+    // A reference from the previous mount can disappear after new handles open.
+    s.m_eject_owners.Remove(stale); s.m_eject.Release(3);
+    s.power=55; expect("power_admission",55); assert(a.shown==2); s.power=0;
+    std::mutex sync; std::condition_variable ready;
+    bool held=false, release=false;
+    std::thread worker([&]{
+        std::lock_guard volume(s.m_volume_mutex);
+        std::unique_lock lock(sync); held=true; ready.notify_all(); ready.wait(lock,[&]{return release;});
+    });
+    { std::unique_lock lock(sync); ready.wait(lock,[&]{return held;}); }
+    expect("volume_io_lock_held",10); assert(a.shown==2);
+    { std::lock_guard lock(sync); release=true; } ready.notify_all(); worker.join();
+    s.m_reconnect_requested=true; expect("storage_reconnecting",11); s.m_reconnect_requested=false;
+    s.m_eject_owners.Remove(file); s.m_eject.Release(4);
+    s.m_eject_owners.Remove(dir); s.m_eject.Release(4);
+    eject::OwnerLink many[21];
+    std::string long_path(200,'a'); long_path += "/tail";
+    for (auto &link: many) add(link, {"many",long_path.c_str()},4);
+    expect("open_usb_handles",10); assert(a.shown==16 && a.status.handles==21);
+    assert(std::strlen(a.owners[0].path)==95 && std::strstr(a.owners[0].path,"/tail"));
+    FormatEjectAttempt(a,request,15); assert(std::strstr(g_eject_report,"omitted=5"));
+    for (auto &link: many) {s.m_eject_owners.Remove(link);s.m_eject.Release(4);}
+    assert(s.RequestEject(10,3,a)==10 && std::strcmp(a.check,"media_generation_mismatch")==0);
+    expect("accepted",0); assert(a.shown==0 && s.m_eject.Blocked());
+    g_eject_ack_result=0;
+    FormatEjectAttempt(a,request,16); assert(!g_eject_report_denied && std::strstr(g_eject_report,"decision=accepted"));
+    std::puts("PASS eject decision, captured owners and paths, remount, bounded output and live volume lock.");
+}
+}
+int main() {
+    cache_test::TestReadLease();
+    storage_test::TestSnapshot();
+    usb::eject::Attempt attempt{};
+    auto bound = [&]{attempt = {};return UsbLaunchInUse(attempt);};
+    auto album = [&]{attempt = {};return ApplicationOrAlbumInUse(attempt);};
+    auto check = [&](const char *why){assert(std::strcmp(attempt.check,why)==0);};
+    assert(!bound());
+    g_process_contents[0]={1,101,true};
+    binding_rc=0; assert(bound() && g_process_contents[0].pin_id); check("loader_binding_process_alive");
+    binding_rc=123; assert(bound() && g_process_contents[0].pin_id); check("loader_binding_process_query_failed");
+    binding_rc=gone; replace_binding=true;
+    assert(bound() && g_process_contents[0].process_id==202); check("loader_binding_replaced_during_query");
+    replace_binding=false; assert(!bound() && !g_process_contents[0].pin_id);
+    assert(!album());
+    app_rc=0; assert(album()); check("application_still_open"); assert(attempt.pid==303);
+    app_rc=44; assert(album()); check("application_process_query_failed");
+    app_rc=gone; album_rc=45; assert(album()); check("album_process_query_failed");
+    album_rc=0; assert(!album());
+    wrong_module=true; assert(album()); check("album_process_does_not_match_cardsnx"); wrong_module=false;
+    open_rc=1; assert(album()); check("album_menu_file_open_failed"); open_rc=0;
+    wrong_file=true; assert(album()); check("album_menu_header_invalid"); wrong_file=false;
+    short_file=true; assert(album()); short_file=false;
+    empty_id=true; assert(album()); check("album_menu_build_id_empty"); empty_id=false;
+    init_rc=1; assert(album()); check("album_loader_connection_failed"); init_rc=0;
+    module_rc=1; assert(album()); check("album_module_query_failed"); module_rc=0;
+    module_count=33; assert(album()); check("album_module_count_invalid");
+    module_count=0; assert(album());
+    assert(file_closes==9 && service_closes==5);
+    std::puts("PASS live and exited game owners, concurrent replacement, CardsNX identity and unknown process checks.");
+}

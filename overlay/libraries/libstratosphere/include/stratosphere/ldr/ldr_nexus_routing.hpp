@@ -65,6 +65,7 @@ namespace ams::ldr::nexus_routing {
         std::uint64_t external{}, internal{}, program{};
         Owner owner{};
         std::uint8_t storage{};
+        bool can_create{true};
     };
     template<std::size_t Capacity> class Pins {
         std::array<Pin,Capacity> entries{};
@@ -89,6 +90,13 @@ namespace ams::ldr::nexus_routing {
             for (const auto &p:entries)
                 if (p.external && p.owner==Owner::Frontend && p.program==program && p.storage==storage) return true;
             return false;
+        }
+        void InvalidateCreates(Owner owner, std::uint64_t program) {
+            for (auto &pin : entries) {
+                if (pin.external && pin.owner == owner && pin.program == program) {
+                    pin.can_create = false;
+                }
+            }
         }
         bool Remove(std::uint64_t external) {
             if (!external) return false;

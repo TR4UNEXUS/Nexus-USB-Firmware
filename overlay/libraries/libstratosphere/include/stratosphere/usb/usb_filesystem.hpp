@@ -67,7 +67,7 @@ namespace ams::usb::filesystem {
             Result ReadDirectoryAtGeneration(const char *path, volume::DirectoryEntryInfo *out, size_t max_entries, size_t skip_entries, bool include_directories, bool include_files, size_t *out_count, u64 media_generation);
             Result GetSpaceSize(u64 *out_free_size, u64 *out_total_size);
             bool IsMounted() const;
-            Result AcquireEjectLease(storage::EjectLease *lease, u64 generation);
+            Result AcquireEjectLease(storage::EjectLease *lease, u64 generation, eject::Origin origin);
     };
 
     Result CreateReadOnlyFileSystem(std::unique_ptr<fs::fsa::IFileSystem> *out, Service *service);

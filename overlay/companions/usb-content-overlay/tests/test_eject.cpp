@@ -10,7 +10,7 @@ int main() {
     assert(!view.Observe(s,1100)); // A plausible old file is insufficient.
     assert(!view.Observe(s,1200)); // Re-reading it cannot make it live.
     s.sample_ms=2000;assert(view.Observe(s,2100));assert(view.CanEject(2100));
-    s.handles=1;view.Observe(s,2100);assert(!view.CanEject(2100));
+    s.handles=1;view.Observe(s,2100);assert(view.CanEject(2100) && !view.Safe(2100));
     s.handles=0;
     ams::usb::eject::Gate gate;gate.NewGeneration(7);
     assert(gate.Acquire(7));assert(!gate.Request(44,7));gate.Release(7);

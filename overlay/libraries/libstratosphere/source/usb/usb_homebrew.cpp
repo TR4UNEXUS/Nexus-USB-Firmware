@@ -67,7 +67,7 @@ namespace ams::usb::homebrew {
 
         u64 media_generation = 0;
         R_TRY(filesystem->GetMediaGeneration(std::addressof(media_generation)));
-        R_TRY(filesystem->AcquireEjectLease(&m_eject_lease,media_generation));
+        R_TRY(filesystem->AcquireEjectLease(&m_eject_lease, media_generation, {"homebrew_nro_reader", path}));
         ON_SCOPE_EXIT { if(!this->IsOpen()) m_eject_lease.Reset(); };
 
         volume::FileInfo file_info{};

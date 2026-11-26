@@ -26,6 +26,7 @@
 #include <stratosphere/os/os_thread_types.hpp>
 #include <stratosphere/usb/usb_volume.hpp>
 #include <stratosphere/usb/usb_eject.hpp>
+#include <stratosphere/usb/usb_eject_owners.hpp>
 #include <stratosphere/usb/usb_keep_alive_test_protocol.h>
 #include <stratosphere/usb/usb_write_transfer_protocol.h>
 #include <stratosphere/usb/usb_completion_probe_protocol.h>
@@ -137,6 +138,7 @@ namespace ams::usb::storage {
             u64 m_media_generation{0};
             Status m_status{};
             eject::Gate m_eject{}; // m_mutex; no new threads or global waits.
+            eject::Owners m_eject_owners{};
 
             host::Client m_client;
             mass_storage::Device m_device;
@@ -183,10 +185,11 @@ namespace ams::usb::storage {
             Result CreateDirectoryAtGeneration(const char *path, u64 media_generation);
             Result FlushAtGeneration(u64 media_generation);
             bool IsRunning() const;
-            Result AcquireEjectLease(u64 generation);
-            void ReleaseEjectLease(u64 generation);
+            Result AcquireEjectLease(u64 generation, eject::OwnerLink &link, eject::Origin origin);
+            void ReleaseEjectLease(u64 generation, eject::OwnerLink &link);
+            void SnapshotEjectOwners(eject::Attempt &attempt) const;
             eject::Status GetEjectStatus() const;
-            Result RequestEject(u64 request, u64 generation);
+            Result RequestEject(u64 request, u64 generation, eject::Attempt &attempt);
             Result ResumeAfterEject();
             Result ControlKeepAliveTest(NexusUsbKeepAliveStatus *out, u64 caller_pid, const NexusUsbKeepAliveRequest &request);
             Result ControlWriteTransferTest(NexusUsbWriteTransferStatus *out, u64 caller_pid, const NexusUsbWriteTransferRequest &request);
@@ -226,13 +229,18 @@ namespace ams::usb::storage {
         NON_MOVEABLE(EjectLease);
         Service *service{};
         u64 generation{};
+        eject::OwnerLink link{};
     public:
         EjectLease() = default;
         ~EjectLease() { Reset(); }
-        void Reset() { if(service) service->ReleaseEjectLease(generation);service=nullptr;generation=0; }
-        Result Acquire(Service *owner, u64 gen) {
+        void Reset() {
+            if (service) service->ReleaseEjectLease(generation, link);
+            service = nullptr;
+            generation = 0;
+        }
+        Result Acquire(Service *owner, u64 gen, eject::Origin origin) {
             R_UNLESS(!service && owner, usb::ResultInvalidParameter());
-            R_TRY(owner->AcquireEjectLease(gen)); service=owner; generation=gen; R_SUCCEED();
+            R_TRY(owner->AcquireEjectLease(gen, link, origin)); service=owner; generation=gen; R_SUCCEED();
         }
     };
 

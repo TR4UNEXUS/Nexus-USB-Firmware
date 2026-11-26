@@ -15,6 +15,7 @@
  */
 #include <stratosphere.hpp>
 #include "boot_display.hpp"
+#include "nexus_splash.hpp"
 #include "boot_i2c_utils.hpp"
 
 #include "boot_registers_di.hpp"
@@ -497,6 +498,31 @@ namespace ams::boot {
         g_is_display_intialized = true;
     }
 
+    namespace {
+        #include "nexus_splash_image.inc"
+
+        void PresentFrameBuffer() {
+            dd::FlushDataCache(g_frame_buffer, FrameBufferSize);
+
+            /* Enable backlight. */
+            if (g_lcd_vendor == 0x2050) {
+                EnableBacklightForVendor2050ForAula(g_display_brightness);
+            } else {
+                EnableBacklightForGeneric(g_display_brightness);
+            }
+        }
+    }
+
+    bool ShowNexusSplash() {
+        if (!g_is_display_intialized ||
+            !splash::Draw(NexusSplashImage, sizeof(NexusSplashImage), g_frame_buffer,
+                          FrameBufferWidth, FrameBufferSize / sizeof(u32))) {
+            return false;
+        }
+        PresentFrameBuffer();
+        return true;
+    }
+
     void ShowDisplay(size_t x, size_t y, size_t width, size_t height, const u32 *img) {
         if (!g_is_display_intialized) {
             return;
@@ -517,27 +543,7 @@ namespace ams::boot {
                 }
             }
         }
-        dd::FlushDataCache(g_frame_buffer, FrameBufferSize);
-
-        /* Enable backlight. */
-        if (g_lcd_vendor == 0x2050) {
-            EnableBacklightForVendor2050ForAula(g_display_brightness);
-        } else {
-            EnableBacklightForGeneric(g_display_brightness);
-        }
-    }
-
-    bool ShowDecodedSplash(bool (*decode)(u32 *pixels, size_t column_stride, size_t capacity)) {
-        if (!g_is_display_intialized || decode == nullptr) return false;
-        std::memset(g_frame_buffer, 0, FrameBufferSize);
-        if (!decode(g_frame_buffer, FrameBufferWidth, FrameBufferSize / sizeof(u32))) return false;
-        dd::FlushDataCache(g_frame_buffer, FrameBufferSize);
-        if (g_lcd_vendor == 0x2050) {
-            EnableBacklightForVendor2050ForAula(g_display_brightness);
-        } else {
-            EnableBacklightForGeneric(g_display_brightness);
-        }
-        return true;
+        PresentFrameBuffer();
     }
 
     void FinalizeDisplay() {

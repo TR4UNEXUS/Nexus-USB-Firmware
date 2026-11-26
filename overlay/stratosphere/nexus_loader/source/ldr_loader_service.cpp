@@ -32,6 +32,15 @@ namespace ams::ldr {
         // all 64 bits. The table never evicts a live process or recycles an ID.
         nexus_routing::Pins<0x80> g_pins;
         std::array<ncm::ProgramId,0x10> g_external_programs{};
+        // The loader processing a CardsNX Album launch must also own its external
+        // filesystem. The loader service handles these requests on one thread.
+        bool g_backend_album_registered = false;
+        void SetBackendAlbumRegistration(bool registered) {
+            // A pin from the previous registration must not consume a new
+            // provider. Keep its owner so the caller can still release it.
+            g_pins.InvalidateCreates(nexus_routing::Owner::Backend, ncm::SystemAppletId::PhotoViewer.value);
+            g_backend_album_registered = registered;
+        }
         bool HasExternalProgram(ncm::ProgramId id) {
             return id != ncm::InvalidProgramId && std::find(g_external_programs.begin(),g_external_programs.end(),id)!=g_external_programs.end();
         }
@@ -39,6 +48,9 @@ namespace ams::ldr {
             for (auto &entry:g_external_programs) if (entry==id) entry=ncm::InvalidProgramId;
         }
         bool UseFrontend(const ncm::ProgramLocation &loc) {
+            if (loc.program_id == ncm::SystemAppletId::PhotoViewer && g_backend_album_registered) {
+                return false;
+            }
             return nexus_routing::UseFrontend(loc.program_id.value,ncm::IsSystemProgramId(loc.program_id),loc.storage_id)
                 || (!ncm::IsSystemProgramId(loc.program_id)
                     && (HasExternalProgram(loc.program_id)
@@ -118,9 +130,15 @@ namespace ams::ldr {
     Result LoaderService::CreateProcess(os::NativeHandle *out, PinId pin_id, u32 flags, os::NativeHandle resource_limit, const ProgramAttributes &attrs) {
         *out=os::InvalidNativeHandle;
         const auto *route=g_pins.Find(pin_id.value);
-        R_UNLESS(route != nullptr,ldr::ResultNotPinned());
-        if (route->owner==nexus_routing::Owner::Backend)
-            R_RETURN(backend::CreateProcess(out,PinId{route->internal},flags,resource_limit,attrs));
+        R_UNLESS(route != nullptr && route->can_create, ldr::ResultNotPinned());
+        if (route->owner == nexus_routing::Owner::Backend) {
+            R_TRY(backend::CreateProcess(out, PinId{route->internal}, flags, resource_limit, attrs));
+            if (route->program == ncm::SystemAppletId::PhotoViewer.value && g_backend_album_registered) {
+                // Successful creation consumes the backend's external code session.
+                SetBackendAlbumRegistration(false);
+            }
+            R_SUCCEED();
+        }
         pin_id={route->internal};
         /* Check that the program attributes are valid. */
         R_UNLESS(IsValidProgramAttributes(attrs), ldr::ResultInvalidProgramAttributes());
@@ -129,6 +147,9 @@ namespace ams::ldr {
         ncm::ProgramLocation loc;
         cfg::OverrideStatus override_status;
         R_TRY(ldr::GetProgramLocationAndOverrideStatusFromPinId(std::addressof(loc), std::addressof(override_status), pin_id));
+        // Path resolution may register a USB code archive before creation
+        // fails. A successful creation already consumes that registration.
+        ON_SCOPE_EXIT { ReleaseTemporaryUsbCode(loc.program_id); };
 
         /* Get the program path. */
         char path[fs::EntryNameLengthMax];
@@ -158,6 +179,9 @@ namespace ams::ldr {
         cfg::OverrideStatus status;
 
         auto load_program_info = [&](const ncm::ProgramLocation &candidate_location) -> Result {
+            // PM may query metadata again after launch, without a subsequent
+            // CreateProcess. Close this lookup's archive after its mounts unwind.
+            ON_SCOPE_EXIT { ReleaseTemporaryUsbCode(candidate_location.program_id); };
             std::memset(out, 0, sizeof(*out));
             std::memset(path, 0, sizeof(path));
 
@@ -266,6 +290,20 @@ namespace ams::ldr {
 
     Result LoaderService::RegisterExternalCode(os::NativeHandle *out, ncm::ProgramId program_id) {
         if (ncm::IsSystemProgramId(program_id)) R_RETURN(backend::RegisterExternalCode(out,program_id));
+        if (program_id == ncm::SystemAppletId::PhotoViewer) {
+            *out = os::InvalidNativeHandle;
+            R_UNLESS(!g_backend_album_registered && !HasExternalProgram(program_id), ncm::ResultInvalidOperation());
+            const Result result = backend::RegisterExternalCode(out, program_id);
+            if (R_SUCCEEDED(result)) {
+                SetBackendAlbumRegistration(true);
+                R_SUCCEED();
+            }
+            // Alternate loaders without external-code support keep the existing
+            // local registration path. Propagate real registration failures.
+            if (!sf::cmif::ResultUnknownCommandId::Includes(result) && !sf::ResultNotSupported::Includes(result)) {
+                R_RETURN(result);
+            }
+        }
         auto *slot=static_cast<ncm::ProgramId *>(nullptr);
         for (auto &entry:g_external_programs) if (entry==program_id) slot=&entry;
         if (!slot) for (auto &entry:g_external_programs) if (entry==ncm::InvalidProgramId) { slot=&entry; break; }
@@ -275,6 +313,12 @@ namespace ams::ldr {
 
     void LoaderService::UnregisterExternalCode(ncm::ProgramId program_id) {
         if (ncm::IsSystemProgramId(program_id)) { R_DISCARD(backend::UnregisterExternalCode(program_id)); return; }
+        if (program_id == ncm::SystemAppletId::PhotoViewer && g_backend_album_registered) {
+            if (R_SUCCEEDED(backend::UnregisterExternalCode(program_id))) {
+                SetBackendAlbumRegistration(false);
+            }
+            return;
+        }
         ForgetExternalProgram(program_id);
         fssystem::DestroyExternalCode(program_id);
         ClearUsbExternalCodeVerification(program_id);

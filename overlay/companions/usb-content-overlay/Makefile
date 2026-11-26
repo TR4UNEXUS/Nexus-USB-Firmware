@@ -10,17 +10,17 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 TARGET      := usb-content-status
 APP_TITLE   := Nexus USB Content
-APP_VERSION := 1.3.0
+APP_VERSION := 1.3.3
 APP_AUTHOR  := TR4U
 BUILD       := build
 SOURCES     := source
 NO_ICON     := 1
 IS_STATUS_MONITOR_DIRECTIVE := 1
 
-REFERENCE_ROOT := $(PROJECT_ROOT)/../horizon-oc-monitor-reference
-INCLUDES       := $(PROJECT_ROOT)/include
+INCLUDES := $(PROJECT_ROOT)/include
 
-include $(REFERENCE_ROOT)/lib/libultrahand/ultrahand.mk
+ULTRAHAND_ROOT ?= $(PROJECT_ROOT)/build-deps/libultrahand
+include $(ULTRAHAND_ROOT)/ultrahand.mk
 
 ARCH    := -march=armv8-a+simd+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS  := -g -Wall -Wno-address-of-packed-member -O2 -ffunction-sections -fdata-sections \

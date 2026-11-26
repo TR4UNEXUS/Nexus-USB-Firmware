@@ -228,6 +228,8 @@ namespace ams::ldr {
             FsFileSystem remote_file_system{};
             remote_file_system.s = filesystem_service;
             R_TRY(fssystem::RegisterExternalCodeFileSystem(loc.program_id, remote_file_system));
+            // The registry now owns the service, including on verification failure.
+            filesystem_guard.Cancel();
 
             const Result remember_result = RememberUsbExternalCodeVerification(loc.program_id, verification);
             if (R_FAILED(remember_result)) {
@@ -235,8 +237,6 @@ namespace ams::ldr {
                 R_RETURN(remember_result);
             }
 
-            /* The external-code map now owns the returned service object. */
-            filesystem_guard.Cancel();
             R_SUCCEED();
         }
 
@@ -696,6 +696,17 @@ namespace ams::ldr {
     void ClearUsbExternalCodeVerification(ncm::ProgramId program_id) {
         std::scoped_lock lk(g_usb_external_code_verification_mutex);
         g_usb_external_code_verification.Remove(program_id);
+    }
+
+    void ReleaseTemporaryUsbCode(ncm::ProgramId program_id) {
+        // Only BindUsbExternalCode records verification here. Other external
+        // providers must survive a program-info query until their own launch.
+        {
+            std::scoped_lock lk(g_usb_external_code_verification_mutex);
+            if (g_usb_external_code_verification.Find(program_id) == nullptr) return;
+            g_usb_external_code_verification.Remove(program_id);
+        }
+        fssystem::DestroyExternalCode(program_id);
     }
 
     Result RedirectProgramPath(const char *path, size_t size, const ncm::ProgramLocation &loc) {

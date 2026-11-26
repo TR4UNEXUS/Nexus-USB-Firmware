@@ -15,6 +15,7 @@
  */
 
 #pragma once
+#include <vapours/nexus_version.h>
 #include <vapours.hpp>
 #include <stratosphere/sf/sf_buffer_tags.hpp>
 #include <stratosphere/hos.hpp>
@@ -71,13 +72,13 @@ namespace ams {
 
 #ifdef ATMOSPHERE_GIT_BRANCH
     NX_CONSTEXPR const char *GetGitBranch() {
-        return ATMOSPHERE_GIT_BRANCH;
+        return "nexus";
     }
 #endif
 
 #ifdef ATMOSPHERE_GIT_REVISION
     NX_CONSTEXPR const char *GetGitRevision() {
-        return ATMOSPHERE_GIT_REVISION;
+        return NEXUS_BUILD_REVISION;
     }
 #endif
 

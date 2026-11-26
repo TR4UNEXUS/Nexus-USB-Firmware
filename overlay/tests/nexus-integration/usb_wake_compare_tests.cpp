@@ -107,10 +107,11 @@ namespace ams::mitm::usb_storage {
     }
     Result OpenLaunchProgramStorage(std::shared_ptr<TestStorage> *out, void *,
                                     const UsbLaunchSnapshot &pin, fssystem::NcaFsHeader::FsType type,
-                                    const LaunchPin &witness_pin = {}) {
+                                    const LaunchPin &witness_pin = {}, u64 pid = 0) {
         assert(type == fssystem::NcaFsHeader::FsType::RomFs);
         assert(!witness_pin || witness_pin.get() == &pin);
         const bool original = opens.fetch_add(1) == 0;
+        assert(pid == (original ? 51u : 0u));
         opened_snapshots.push_back(&pin);
         if (!original) {
             open_started.store(true);

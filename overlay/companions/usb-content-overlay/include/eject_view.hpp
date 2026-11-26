@@ -27,7 +27,9 @@ public:
         return Fresh(now) && nexus_eject::Safe(value,value.boot,value.request);
     }
     bool CanEject(uint64_t now) const {
-        return Fresh(now) && value.phase==0 && value.ready && value.generation && !value.handles;
+        // The firmware checks current ownership on confirmation. Its last
+        // sample can include a game that has since exited.
+        return Fresh(now) && value.phase==0 && value.ready && value.generation;
     }
     bool CanResume(uint64_t now) const { return Safe(now); }
 };

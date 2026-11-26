@@ -9,6 +9,7 @@ struct Slot {
     u64 pid{};
     sf::CopyHandle process{};
     nexus_vsd::Session session{};
+    usb::storage::EjectLease eject_lease;
 };
 os::SdkMutex g_vsd_lock{};
 Slot g_vsd_slots[8]{};
@@ -30,6 +31,7 @@ void ReapVirtualSdProcesses() {
         if(!lk.owns_lock())return;
         ++g_vsd_diagnostics.polls;
         for(auto &s:g_vsd_slots)if(s.pid) {
+            if (s.session.ArmExpired(Now())) s.eject_lease.Reset();
             s64 state{};
             const Result rc=svc::GetProcessInfo(&state,s.process.GetOsHandle(),svc::ProcessInfoType_ProcessState);
             if(R_FAILED(rc)) {
@@ -44,6 +46,7 @@ void ReapVirtualSdProcesses() {
             g_vsd_diagnostics.last_ms=Now();
             ++g_vsd_diagnostics.detached;
             s.session.Clear();
+            s.eject_lease.Reset();
             retired[count++]=std::move(s.process);
             s.pid=0;
         }
@@ -120,7 +123,10 @@ Result HomebrewService::QueryVirtualSd(sf::Out<NexusVsdStatus> out,const sf::Cli
 Result HomebrewService::CancelVirtualSd(const sf::ClientProcessId &pid){
     // Keep the authenticated loader introduction for a later Arm in this same
     // process. The independent watcher owns its bounded lifetime, even Idle.
-    {std::scoped_lock lk(g_vsd_lock);if(auto s=Find(pid.GetValue().value))s->session.Clear();}
+    {std::scoped_lock lk(g_vsd_lock);if(auto s=Find(pid.GetValue().value)) {
+        s->session.Clear();
+        s->eject_lease.Reset();
+    }}
     RetireStartupTimingCapture(pid.GetValue().value);R_SUCCEED();
 }
 Result HomebrewService::BeginVirtualSdLoad(sf::Out<NexusVsdStatus> out,const sf::ClientProcessId &pid,
@@ -148,6 +154,7 @@ Result HomebrewService::BeginVirtualSdLoad(sf::Out<NexusVsdStatus> out,const sf:
     } // Existing PID already has a validated watch; RAII closes the extra copy.
     const bool armed=s->session.phase==nexus_vsd::Phase::Armed;
     const bool active=s->session.Begin(value,Now());
+    if (!active) s->eject_lease.Reset();
     out.SetValue(Status(s));
     // Expired or mismatched arm must not silently load an SD copy.
     R_UNLESS(!armed || active,usb::ResultInvalidParameter());
@@ -170,6 +177,11 @@ Result HomebrewService::ArmVirtualSd(const sf::ClientProcessId &pid,u64 generati
     auto s=Find(pid.GetValue().value);
     R_UNLESS(s,usb::ResultNotInitialized()); // custom hbloader must have introduced this PID
     R_UNLESS(s->session.Arm(value,generation,Now()),usb::ResultInvalidParameter());
+    const Result lease_result = s->eject_lease.Acquire(service, generation, {"virtual_sd_session", value, pid.GetValue().value});
+    if (R_FAILED(lease_result)) {
+        s->session.Clear();
+        R_RETURN(lease_result);
+    }
     R_SUCCEED();
 }
 }

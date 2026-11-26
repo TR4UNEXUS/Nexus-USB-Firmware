@@ -1,3 +1,4 @@
+#include <vapours/nexus_version.h>
 #include <stratosphere/ncm/ncm_usb_map_write_lease.hpp>
 #include "sd_io_hooks.hpp"
 /*
@@ -66,6 +67,7 @@
 #include "usb_verification_addon.hpp"
 #include <stratosphere/usb/usb_launch_content.hpp>
 #include <stratosphere/usb/usb_eject_protocol.hpp>
+#include <stratosphere/usb/usb_cached_control_filesystem.hpp>
 
 namespace ams::mitm::usb_storage {
 
@@ -99,7 +101,7 @@ namespace ams::mitm::usb_storage {
         constexpr const char *UltrahandNotificationDirectory = "/config/ultrahand/notifications";
         /* R83 also accepts NS patch status from a late generic Loader request
          * when the failing title aborts before its mapped resolver executes. */
-    constexpr const char *BuildId = "NEXUS-1.12.2-RF3-independent-loader";
+    constexpr const char *BuildId = NEXUS_FIRMWARE_BUILD_ID;
         int FormatUsbMetadataOptimizationStatus(char *out, size_t capacity) {
             return util::SNPrintf(out, capacity,
                 "io_metadata_cache=SD9\nio_metadata_cache_slots=64\n"
@@ -380,7 +382,8 @@ namespace ams::mitm::usb_storage {
                 if (entry.pin_id == 0) {
                     auto lease=std::make_shared<usb::storage::EjectLease>();
                     R_UNLESS(lease,ams::fs::ResultAllocationMemoryFailed());
-                    R_TRY(lease->Acquire(&g_storage_service,snapshot->generation));
+                    R_TRY(lease->Acquire(&g_storage_service, snapshot->generation,
+                        {"loader_process_binding", nullptr, binding.process_id, binding.program_id}));
                     entry = {binding.pin_id, binding.process_id, snapshot, std::move(lease)};
                     R_SUCCEED();
                 }
@@ -1589,7 +1592,9 @@ namespace ams::mitm::usb_storage {
         Result EnsureUsbStarted();
         Result CheckImageScanGeneration(u64 expected_generation);
 
-        Result OpenUsbNcaReader(std::shared_ptr<fssystem::NcaReader> *out, const char *mounted_path, bool apply_external_key, bool already_started = false, bool require_signed = false) {
+        Result OpenUsbNcaReader(std::shared_ptr<fssystem::NcaReader> *out, const char *mounted_path, bool apply_external_key, bool already_started = false, bool require_signed = false,
+                                usb::filesystem::ReadLease lease = usb::filesystem::ReadLease::OpenFile,
+                                u64 title = 0, u64 pid = 0, const char *reader_origin = __builtin_FUNCTION()) {
             R_UNLESS(out != nullptr && mounted_path != nullptr, usb::ResultInvalidParameter());
             if (!already_started) { R_TRY(EnsureUsbStarted()); }
 
@@ -1599,7 +1604,8 @@ namespace ams::mitm::usb_storage {
             R_UNLESS(IsSafeHomebrewPath(relative_path, std::strlen(relative_path)), ams::fs::ResultInvalidPath());
 
             std::unique_ptr<ams::fs::fsa::IFileSystem> unique_base_fs;
-            R_TRY(ams::usb::filesystem::CreateReadOnlyFileSystem(std::addressof(unique_base_fs), std::addressof(g_filesystem_service)));
+            R_TRY(ams::usb::filesystem::CreateReadOnlyFileSystem(std::addressof(unique_base_fs), std::addressof(g_filesystem_service), lease,
+                {reader_origin, nullptr, pid, title}));
             std::shared_ptr<ams::fs::fsa::IFileSystem> base_fs(std::move(unique_base_fs));
             R_UNLESS(base_fs != nullptr, ams::fs::ResultAllocationMemoryFailed());
 
@@ -1711,11 +1717,11 @@ namespace ams::mitm::usb_storage {
 
         Result OpenLaunchReader(std::shared_ptr<fssystem::NcaReader> *out,
                 const UsbLaunchSnapshot &snapshot, const ncm::ContentId &id,
-                fssystem::NcaHeader::ContentType type, u64 expected_id, u64 alternate_id = 0) {
+                const char *owner, u64 pid, fssystem::NcaHeader::ContentType type, u64 expected_id, u64 alternate_id = 0) {
             R_TRY(CheckLaunchGeneration(snapshot));
             char path[ams::fs::EntryNameLengthMax + 1]{};
             R_TRY(MakeLaunchContentPath(path, sizeof(path), id));
-            R_TRY(OpenUsbNcaReader(out, path, true));
+            R_TRY(OpenUsbNcaReader(out, path, true, false, false, usb::filesystem::ReadLease::OpenFile, expected_id, pid, owner));
             /* NCM's Data category may refer to an NCA Data OR PublicData
              * archive. Only the add-on path requests Data here: Program
              * readers must still match exactly. Identity, generation, crypto
@@ -1733,13 +1739,13 @@ namespace ams::mitm::usb_storage {
          * standalone archive. Verification and compression layers stay active. */
         Result OpenLaunchProgramStorage(std::shared_ptr<ams::fs::IStorage> *out, ams::fs::CodeVerificationData *verification,
                                         const UsbLaunchSnapshot &snapshot, fssystem::NcaFsHeader::FsType wanted_type,
-                                        const LaunchPin &witness_pin = {}) {
+                                        const LaunchPin &witness_pin = {}, u64 pid = 0) {
             std::shared_ptr<fssystem::NcaReader> base, patch;
             const auto &content = snapshot.content;
-            R_TRY(OpenLaunchReader(std::addressof(base), snapshot, content.base, fssystem::NcaHeader::ContentType::Program,
+            R_TRY(OpenLaunchReader(std::addressof(base), snapshot, content.base, "game_base_archive", pid, fssystem::NcaHeader::ContentType::Program,
                                    content.program_id));
             if (content.patch_id != 0) {
-                R_TRY(OpenLaunchReader(std::addressof(patch), snapshot, content.patch, fssystem::NcaHeader::ContentType::Program,
+                R_TRY(OpenLaunchReader(std::addressof(patch), snapshot, content.patch, "game_update_archive", pid, fssystem::NcaHeader::ContentType::Program,
                                        content.program_id, content.patch_id + (content.program_id - content.application_id)));
             }
             /* An absent section inherits base. A present, invalid patch
@@ -1913,7 +1919,7 @@ namespace ams::mitm::usb_storage {
             R_UNLESS(out != nullptr && out_verification != nullptr, usb::ResultInvalidParameter());
 
             std::shared_ptr<fssystem::NcaReader> reader;
-            R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true));
+            R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true, false, false, usb::filesystem::ReadLease::OpenFile, program_id.value));
             R_UNLESS(reader->GetContentType() == fssystem::NcaHeader::ContentType::Program, ams::fs::ResultPreconditionViolation());
             R_UNLESS(reader->GetProgramId() == program_id.value, ams::fs::ResultInvalidArgument());
 
@@ -2841,7 +2847,7 @@ namespace ams::mitm::usb_storage {
             dst[copied] = '\0';
         }
 
-        void WriteUltrahandNotification(const char *title, const char *text) {
+        bool WriteUltrahandNotification(const char *title, const char *text, const char *icon = "ams-usb") {
             /* Ultrahand consumes API notifications from SD-root
              * /config/ultrahand/notifications. The AtmosphereSd helpers add an
              * /atmosphere prefix and therefore write to a directory Ultrahand
@@ -2862,24 +2868,35 @@ namespace ams::mitm::usb_storage {
                 text,
                 title);
             if (written <= 0 || static_cast<size_t>(written) >= sizeof(notification)) {
-                return;
+                return false;
             }
 
-            char path[ams::fs::EntryNameLengthMax + 1]{};
-            util::SNPrintf(path, sizeof(path), "%s/ams-usb-%u.notify", UltrahandNotificationDirectory, g_notification_sequence++);
+            // Ultrahand reads the icon name up to the last dash. Publish only
+            // after close so its watcher sees one complete, playable event.
+            constexpr const char *temp = "/config/ultrahand/notifications/ams-usb.tmp";
+            char from[128]{}, to[160]{};
+            const auto *mount = ams::fs::impl::SdCardFileSystemMountName;
+            util::SNPrintf(from, sizeof(from), "%s:%s", mount, temp);
+            util::SNPrintf(to, sizeof(to), "%s:%s/%s-%llx_%u.notify", mount,
+                           UltrahandNotificationDirectory, icon, static_cast<unsigned long long>(::armGetSystemTick()), g_notification_sequence++);
+            static_cast<void>(ams::fs::DeleteFile(from));
+            if (R_FAILED(mitm::fs::CreateSdFile(temp, written, ams::fs::CreateOption_None))) return false;
+            ON_SCOPE_EXIT { static_cast<void>(ams::fs::DeleteFile(from)); };
+            {
+                FsFile file{};
+                if (R_FAILED(mitm::fs::OpenSdFile(&file, temp, ams::fs::OpenMode_ReadWrite))) return false;
+                ON_SCOPE_EXIT { fsFileClose(&file); };
+                if (R_FAILED(fsFileWrite(&file, 0, notification, static_cast<size_t>(written), FsWriteOption_Flush))) return false;
+            }
+            return R_SUCCEEDED(ams::fs::RenameFile(from, to));
+        }
 
-            FsFile file{};
-            if (R_FAILED(mitm::fs::OpenSdFile(std::addressof(file), path, ams::fs::OpenMode_ReadWrite))) {
-                if (R_FAILED(mitm::fs::CreateSdFile(path, 0, ams::fs::CreateOption_None)) ||
-                    R_FAILED(mitm::fs::OpenSdFile(std::addressof(file), path, ams::fs::OpenMode_ReadWrite))) {
-                    return;
-                }
-            }
-            ON_SCOPE_EXIT { static_cast<void>(fsFileClose(std::addressof(file))); };
-            if (R_FAILED(fsFileSetSize(std::addressof(file), static_cast<s64>(written)))) {
-                return;
-            }
-            static_cast<void>(fsFileWrite(std::addressof(file), 0, notification, static_cast<size_t>(written), FsWriteOption_Flush));
+        void NotifyUsbConnection(bool connected, const char *detail) {
+            // Safe removal has its own completion event. Losing readiness
+            // while unmounting is too early to tell the user to unplug.
+            if (!connected && g_storage_service.GetEjectStatus().phase != usb::eject::Phase::Online) return;
+            WriteUltrahandNotification(connected ? "USB connected" : "USB disconnected", detail,
+                                       connected ? "ams-usb-connected" : "ams-usb-disconnected");
         }
 
         void SetContentRouteAppliedState(bool enabled) {
@@ -3008,7 +3025,10 @@ namespace ams::mitm::usb_storage {
                     }
                     char safe_text[sizeof(text)]{};
                     CopyNotificationField(safe_text, sizeof(safe_text), text);
-                    WriteUltrahandNotification("USB storage", safe_text);
+                    if (ready && storage_status.state != ams::usb::storage::State::Error)
+                        NotifyUsbConnection(true, safe_text);
+                    else
+                        WriteUltrahandNotification("USB storage", safe_text);
                 }
                 return;
             }
@@ -3041,7 +3061,7 @@ namespace ams::mitm::usb_storage {
                 const char *title = "USB storage";
                 if (startup_error) {
                     util::SNPrintf(text, sizeof(text), "USB startup failed: 0x%08X", storage_status.last_result);
-                } else if (connected) {
+                } else if (connected || media_changed) {
                     util::SNPrintf(text, sizeof(text), "Connected: %s (%s)", safe_device, GetFilesystemName(storage_status.filesystem_type));
                 } else if (disconnected) {
                     util::SNPrintf(text, sizeof(text), "Disconnected: %s", safe_device);
@@ -3051,7 +3071,10 @@ namespace ams::mitm::usb_storage {
 
                 char safe_text[sizeof(text)]{};
                 CopyNotificationField(safe_text, sizeof(safe_text), text);
-                WriteUltrahandNotification(title, safe_text);
+                if (!startup_error && (connected || media_changed || disconnected))
+                    NotifyUsbConnection(!disconnected, safe_text);
+                else
+                    WriteUltrahandNotification(title, safe_text);
             }
 
             g_notification_last_mounted = mounted;
@@ -3091,7 +3114,7 @@ namespace ams::mitm::usb_storage {
                     util::SNPrintf(text, sizeof(text), "Mounted: %s %s", device, total);
                     char safe_text[sizeof(text)]{};
                     CopyNotificationField(safe_text, sizeof(safe_text), text);
-                    WriteUltrahandNotification("USB content storage", safe_text);
+                    NotifyUsbConnection(true, safe_text);
                 }
                 return;
             }
@@ -3111,7 +3134,7 @@ namespace ams::mitm::usb_storage {
 
                 if (disconnected) {
                     FormatCapacity(total, sizeof(total), g_content_notification_last_total_space);
-                    util::SNPrintf(text, sizeof(text), "Ejected: %s %s", device, total);
+                    util::SNPrintf(text, sizeof(text), "%s %s", device, total);
                 } else {
                     FormatCapacity(total, sizeof(total), status.total_space);
                     util::SNPrintf(text, sizeof(text), "Mounted: %s %s", device, total);
@@ -3119,7 +3142,7 @@ namespace ams::mitm::usb_storage {
 
                 char safe_text[sizeof(text)]{};
                 CopyNotificationField(safe_text, sizeof(safe_text), text);
-                WriteUltrahandNotification("USB content storage", safe_text);
+                NotifyUsbConnection(!disconnected, safe_text);
             }
 
             g_content_notification_last_ready = ready;
@@ -3203,6 +3226,7 @@ namespace ams::mitm::usb_storage {
                 "native_path_enabled=%u\n"
                 "metadata_route_enabled=%u\n"
                 "build_id=%s\n"
+                "usb_eject_owner_logging=1\n"
                 "io_read_cache_slots=8\n"
                 "io_same_drive_cache=S1\n"
                 "io_performance=S2\n"
@@ -4267,7 +4291,7 @@ namespace ams::mitm::usb_storage {
         R_UNLESS(out != nullptr && snapshot != nullptr, ams::fs::ResultPathNotFound());
         /* No fallback on ejection, integrity or IO errors: code and resources
          * must remain from the same immutable USB launch. */
-        R_TRY(OpenLaunchProgramStorage(out, nullptr, *snapshot, fssystem::NcaFsHeader::FsType::RomFs, pin ? snapshot : LaunchPin{}));
+        R_TRY(OpenLaunchProgramStorage(out, nullptr, *snapshot, fssystem::NcaFsHeader::FsType::RomFs, pin ? snapshot : LaunchPin{}, process_id));
         if (pin) *pin = snapshot;
         R_SUCCEED();
     }
@@ -4427,7 +4451,7 @@ namespace ams::mitm::usb_storage {
                 && storage_id != static_cast<u8>(ncm::StorageId::None))) continue;
             std::shared_ptr<fssystem::NcaReader> reader;
             R_TRY(OpenLaunchReader(std::addressof(reader), *snapshot, addon.content_id,
-                fssystem::NcaHeader::ContentType::Data, data_id.value));
+                "game_dlc_archive", process_id, fssystem::NcaHeader::ContentType::Data, data_id.value));
             R_TRY(OpenUsbNcaStorage(out, std::move(reader), fssystem::NcaFsHeader::FsType::RomFs));
             R_RETURN(CheckLaunchGeneration(*snapshot));
         }
@@ -4623,7 +4647,7 @@ namespace ams::mitm::usb_storage {
         std::shared_ptr<ams::fs::fsa::IFileSystem> *out,
         ncm::ProgramId *out_resolved_program_id,
         const char *content_path,
-        ncm::ProgramId requested_program_id) {
+        ncm::ProgramId requested_program_id, u64 caller_pid) {
         R_UNLESS(out != nullptr && out_resolved_program_id != nullptr
             && content_path != nullptr, usb::ResultInvalidParameter());
         R_UNLESS(ncm::IsApplicationId(requested_program_id)
@@ -4641,7 +4665,10 @@ namespace ams::mitm::usb_storage {
         /* Snapshot-only route: do not start USB, scan a library, or consult
          * NCM/SD maps recursively from an FS hook. Keep the existing header
          * policy and the normal decrypted, integrity-checked RomFS reader. */
-        R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true, true));
+        // HOME can retain this Control filesystem after displaying the icon.
+        // Use the same generation-bound, per-read lease as the mapped Control route.
+        R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true, true, false,
+            usb::filesystem::ReadLease::CachedControl, requested_program_id.value, caller_pid));
         R_UNLESS(reader->GetContentType() == fssystem::NcaHeader::ContentType::Control,
             ams::fs::ResultPreconditionViolation());
         const ncm::ProgramId resolved_program_id{reader->GetProgramId()};
@@ -4663,7 +4690,7 @@ namespace ams::mitm::usb_storage {
         R_SUCCEED();
     }
 
-    Result OpenUsbControlFileSystem(std::shared_ptr<ams::fs::fsa::IFileSystem> *out, ncm::ProgramId *out_resolved_program_id, const char *content_path, ncm::ProgramId requested_program_id) {
+    Result OpenUsbControlFileSystem(std::shared_ptr<ams::fs::fsa::IFileSystem> *out, ncm::ProgramId *out_resolved_program_id, const char *content_path, ncm::ProgramId requested_program_id, u64 caller_pid) {
         R_UNLESS(out != nullptr && out_resolved_program_id != nullptr && content_path != nullptr, usb::ResultInvalidParameter());
         R_UNLESS(IsUsbContentLaunchPathEnabled(), usb::ResultOperationDenied());
         *out_resolved_program_id = requested_program_id;
@@ -4685,7 +4712,7 @@ namespace ams::mitm::usb_storage {
         R_UNLESS(ResolveMappedControlProgramId(std::addressof(mapped_program_id), mounted_path, requested_program_id), ams::fs::ResultPathNotFound());
 
         std::shared_ptr<fssystem::NcaReader> reader;
-        R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true));
+        R_TRY(OpenUsbNcaReader(std::addressof(reader), mounted_path, true, false, false, usb::filesystem::ReadLease::CachedControl, mapped_program_id.value, caller_pid));
         R_UNLESS(reader->GetContentType() == fssystem::NcaHeader::ContentType::Control, ams::fs::ResultPreconditionViolation());
         const ncm::ProgramId resolved_program_id{reader->GetProgramId()};
         R_UNLESS(resolved_program_id == mapped_program_id, ams::fs::ResultInvalidArgument());

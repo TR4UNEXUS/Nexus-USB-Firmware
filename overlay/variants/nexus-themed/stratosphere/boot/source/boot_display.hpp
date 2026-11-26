@@ -21,7 +21,7 @@ namespace ams::boot {
     /* Splash Screen/Display utilities. */
     void InitializeDisplay();
     void ShowDisplay(size_t x, size_t y, size_t width, size_t height, const u32 *img);
-    bool ShowDecodedSplash(bool (*decode)(u32 *pixels, size_t column_stride, size_t capacity));
+    bool ShowNexusSplash();
     void FinalizeDisplay();
 
     void SetDisplayBrightness(int percentage);

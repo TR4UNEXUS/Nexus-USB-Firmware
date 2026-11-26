@@ -59,7 +59,13 @@ int main() {
     std::filesystem::remove(CommandPath);host_ms+=1000;Status(0,0,0,0,r.nonce);gui.update();
     assert(action->text=="Safe eject");
     host_ms+=1000;Status(0,0,0,0,r.nonce,0,1);gui.update();
-    action->click(HidNpadButton_A);assert(!std::filesystem::exists(CommandPath));assert(action->value=="In use");
+    assert(action->value=="Check use");
+    action->click(HidNpadButton_A);assert(!std::filesystem::exists(CommandPath));assert(action->value=="Confirm");
+    action->click(HidNpadButton_A);assert(std::filesystem::exists(CommandPath));
+    std::ifstream(CommandPath,std::ios::binary).read(reinterpret_cast<char*>(&r),sizeof(r));
+    std::filesystem::remove(CommandPath);
+    host_ms+=1000;Status(0,0,0,0,r.nonce,0x402,1);gui.update();
+    assert(action->text=="Safe eject" && action->value=="Check use");
     std::ofstream("sdmc:/atmosphere/logs/usb_storage_status.txt")<<"state=Ready\nready=1\nwritable=1\npartition_name=NEXUS GAMES\nfree_space=0\ntotal_space=536870912000\n";
     host_ms+=1000;gui.update();labels=panel();
     assert(std::find(labels.begin(),labels.end(),"0 B")!=labels.end()); // full drive is not N/A
@@ -67,6 +73,24 @@ int main() {
     host_ms+=1000;gui.update();labels=panel();
     assert(std::find(labels.begin(),labels.end(),"Last reported")!=labels.end());
     assert(std::find(labels.begin(),labels.end(),"0 B")!=labels.end());
+    // A consumed request can expire without an ack. A missing or stale
+    // heartbeat must never enable retry or claim the drive was released.
+    host_ms+=1000;Status();gui.update();
+    action->click(HidNpadButton_A);action->click(HidNpadButton_A);
+    std::ifstream(CommandPath,std::ios::binary).read(reinterpret_cast<char*>(&r),sizeof(r));
+    host_ms+=6100;gui.update();assert(action->value=="Waiting");
+    Status();action->click(HidNpadButton_A); // first new heartbeat after the gap
+    host_ms+=500;Status();gui.update();action->click(HidNpadButton_A);
+    assert(action->value=="Please wait"); // command file is still present
+    std::filesystem::remove(CommandPath);host_ms+=1000;Status();gui.update();
+    action->click(HidNpadButton_A);assert(action->value=="Confirm");
+    assert(!std::filesystem::exists(CommandPath)); // no automatic retry
+    nexus_eject::Snapshot refused{};refused.boot=123;refused.ack=r.nonce;refused.ack_result=0x402;
+    std::ofstream(BlockedPath)<<"NX1 safe eject admission v1\nboot=123 request="<<r.nonce
+        <<" uptime_ms=5000 requested_generation=7\ndecision=refused check=open_usb_handles result=0x00000402 query_result=0x0\n";
+    assert(std::string(BlockReason(refused))=="A USB file or folder is still open.");
+    refused.ack++;assert(!BlockReason(refused));refused.ack--;refused.boot++;assert(!BlockReason(refused));
+    refused.boot--;refused.ack_result++;assert(!BlockReason(refused));
     delete frame;
     std::cout<<"PASS: actual overlay callbacks, confirmation/cancel, atomic firmware request, busy/refused/flush/wait/safe/stale/reconnect flow\n";
 }

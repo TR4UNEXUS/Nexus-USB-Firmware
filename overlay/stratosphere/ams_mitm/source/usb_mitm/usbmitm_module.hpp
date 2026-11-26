@@ -70,7 +70,7 @@ namespace ams::mitm::usb_storage {
     Result OpenUsbProcessRomFs(std::shared_ptr<::ams::fs::IStorage> *out, u64 process_id, ncm::ProgramId program_id);
     bool HasUsbAddOnContent(ncm::ProgramId client, ncm::DataId data_id, u8 storage_id, u64 process_id);
     Result OpenUsbAddOnRomFs(std::shared_ptr<::ams::fs::IStorage> *out, ncm::ProgramId client, ncm::DataId data_id, u8 storage_id, u64 process_id);
-    Result OpenUsbControlFileSystem(std::shared_ptr<::ams::fs::fsa::IFileSystem> *out, ncm::ProgramId *out_resolved_program_id, const char *content_path, ncm::ProgramId requested_program_id);
+    Result OpenUsbControlFileSystem(std::shared_ptr<::ams::fs::fsa::IFileSystem> *out, ncm::ProgramId *out_resolved_program_id, const char *content_path, ncm::ProgramId requested_program_id, u64 caller_pid = 0);
     struct UsbNcaHeaderInfo {
         ncm::ProgramId program_id;
         ::ams::fs::RightsId rights_id;
@@ -86,7 +86,7 @@ namespace ams::mitm::usb_storage {
         std::shared_ptr<::ams::fs::fsa::IFileSystem> *out,
         ncm::ProgramId *out_resolved_program_id,
         const char *content_path,
-        ncm::ProgramId requested_program_id);
+        ncm::ProgramId requested_program_id, u64 caller_pid);
     Result OpenUsbVerificationFileSystem(std::shared_ptr<::ams::fs::fsa::IFileSystem> *out,
         const char *path, size_t path_bound, ncm::ProgramId requested, ncm::ProgramId title, u32 type);
     Result GetUsbApplicationContentPath(char *out_path, size_t out_size, ncm::ProgramId application_id, ncm::ContentType content_type);

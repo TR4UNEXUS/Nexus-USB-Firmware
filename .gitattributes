@@ -7,3 +7,4 @@ Makefile text eol=lf
 *.jpg binary
 *.ttf binary
 *.bin binary
+*.rgba binary

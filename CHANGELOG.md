@@ -1,5 +1,11 @@
 # Changes
 
+## NX1 safe eject and USB Content 1.3.3
+
+- Close a USB game on HOME, then use **Safely eject USB** in Nexus USB Content. Loader releases the temporary base archive used for title lookups and failed launches. Running games, open files and transfers still block removal.
+- The overlay can ask the firmware to check what is using the drive. A purple check and chime mark a completed eject. A teal plus shows a connection and an amber minus shows an unexpected disconnect.
+- Standard No-HOC, Standard HOC and Nexus-Themed HOC use the same USB service, independent Loader, overlay and notification artwork. The themed edition draws its purple splash from the JPEG embedded in its boot module.
+
 ## 1.12.2 RF3
 
 - Preserve the successful same-drive sleep/resume path. After a failed wake, restart discovery only after FullAwake acknowledgement and quiescence, revoke old handles, and never replay uncertain writes.

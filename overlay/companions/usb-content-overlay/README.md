@@ -1,4 +1,4 @@
-# Nexus USB Content 1.3.0
+# Nexus USB Content 1.3.3
 
 An Ultrahand/Tesla overlay for Nexus USB storage. Copy
 `switch/.overlays/usb-content-status.ovl` onto the SD card, replacing the old
@@ -9,6 +9,10 @@ Close games, Album/homebrew and transfers, then open Nexus USB Content from
 the HOME menu. Select **Safely eject USB**, press A to confirm, and leave the
 drive connected until **Safe to unplug** appears. The Switch can remain on.
 Choose **Reconnect USB** to use the drive again without restarting the Switch.
+
+If the drive still has open handles, **Check use** lets you ask the firmware
+to check them. A refused request shows the reason when the firmware supplies
+one. After an expired request you can select Safe eject again.
 
 The firmware refuses eject while it has active users, closes admission to new
 operations, flushes the filesystem, unmounts it, synchronises the device cache,
@@ -28,16 +32,14 @@ independent of the safe-eject heartbeat, so waiting for eject status no longer
 hides the drive information. Missing/old storage status is labelled as last
 reported data. A full drive correctly shows zero free space.
 
-Technical diagnostics are no longer shown. Coloured notifications
-are supplied by the firmware and existing Ultrahand configuration, unchanged
-by this overlay. Selecting an install target is separate from ejecting.
+Ultrahand displays a teal plus when a drive connects, a purple check when a
+safe eject completes and an amber minus if the drive disconnects unexpectedly.
+The pop-ups use Ultrahand's native fade and its notification sound. Its mute
+and sound-effect settings apply. Deploy the matching NX1 USB firmware and
+the four badges in `config/ultrahand/assets/notifications/` with the overlay.
 
-Build with devkitPro/devkitA64 and libnx: `make -j4`. The adjacent
-`horizon-oc-monitor-reference/lib/libultrahand` supplies the UI library. The
-protocol header is copied byte-for-byte from the matching Nexus firmware.
+Run `sh notifications/prepare-library.sh` and then `make -j4` with
+devkitPro/devkitA64 and libnx. The library is pinned to the one shipped with
+Ultrahand 2.5.4.
 
-The 1.3.0 build and host tests passed, including actual button callbacks and
-request-file handling. Safe removal/reconnect still needs a physical Switch
-test. Host tests do not reproduce USB hardware or Horizon services. The layout
-preview is rendered from production drawing code with sample data and a
-substitute font; it is not a console screenshot.
+Run `python3 tests/run.py` from this directory for the menu and eject-protocol tests.

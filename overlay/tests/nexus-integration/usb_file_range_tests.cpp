@@ -70,6 +70,8 @@ struct WritableVolume {
 };
 struct Storage {
     WritableVolume m_writable_volume;
+    struct GameReadCache { bool cached = true; void Clear() { cached=false; } };
+    GameReadCache *m_game_read_cache{};
     bool m_writable_ready = true;
     bool ready = true;
     u64 generation = 7;
@@ -135,6 +137,8 @@ static void QueryRawRange() {
 }
 static void InvalidateAfterWake() {
     Storage storage;
+    Storage::GameReadCache game_cache;
+    storage.m_game_read_cache = &game_cache;
     Facade facade{&storage,true,{}};
     ReadOnlyFile file{&facade};
     auto invalidate = [&]{return file.Operate(nullptr,0,fs::OperationId::Invalidate,0,INT64_MAX);};
@@ -143,6 +147,7 @@ static void InvalidateAfterWake() {
     auto read_alias = [&](unsigned n){auto &h=volume.readers[n].handle; if(!h.open){h.cached_data=2;h.open=true;}return h.cached_data;};
     assert(read_alias(0)==1 && read_alias(1)==1);
     assert(!invalidate() && !volume.metadata_cached && !fatfs::g_clean_sectors.hit);
+    assert(!game_cache.cached);
     assert(fatfs::write_cache_diagnostics::last_sector_size==512);
     assert(read_alias(0)==2 && read_alias(1)==2 && volume.filesystem.winsect==UINT64_MAX);
     volume.filesystem.wflag=true;

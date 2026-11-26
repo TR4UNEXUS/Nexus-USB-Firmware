@@ -34,7 +34,7 @@ inline void Header(Renderer*r) {
     Text(r,"USB Content",24,70,300,16,Secondary);
     Box(r,370,22,54,25,Border,Surface,7);
     Text(r,"USB",384,39,35,12);
-    RightText(r,"1.3.0",424,70,12,Secondary);
+    RightText(r,APP_VERSION,424,70,12,Secondary);
     r->drawRect(24,89,248,2,Blue);
     r->drawRect(272,89,152,2,Purple);
 }
